@@ -136,6 +136,18 @@ Status is updated as phases land.
     edits; generation is untouched, since a transparent background is a legitimate
     request there.
 
+12. **Image logic is entangled with the plug-in lifecycle.** `GimpAIPlugin`
+    cannot be instantiated outside GIMP's plug-in protocol - `Gimp.PlugIn`'s
+    constructor asserts on a live wire channel and aborts the process - yet the
+    coordinate and mask methods need none of that. `tests/gimp_integration.py`
+    works around it by grafting the methods onto a plain object. Phase 3 should
+    lift them into a class that does not inherit from `Gimp.PlugIn`.
+13. **Procedures are dialog-only.** All three take `run_mode` and ignore it,
+    always showing a GTK dialog, so nothing can drive a full inpaint headlessly.
+    Adding `RUN_NONINTERACTIVE` support would make the plugin scriptable (batch
+    processing was on upstream's own v1.0 wishlist) and allow true end-to-end
+    tests. *(Phase 2 or 3.)*
+
 ## Roadmap
 
 - **Phase 0 — Baseline.** *(complete)* Fork, verify upstream against GIMP 3.2.6, record findings,
@@ -161,10 +173,38 @@ Status is updated as phases land.
 # API reachability, TLS, and per-model cost. Needs OPENAI_API_KEY in the environment.
 "$LOCALAPPDATA/Programs/GIMP 3/bin/python.exe" tools/smoke_test.py
 
+# Integration tests: real GIMP, real GEGL, no display and no GUI. Slow
+# (GIMP scans plug-ins on startup) but it is the only automated cover for the
+# mask and coordinate code, where both Phase 1 bugs lived.
+"$LOCALAPPDATA/Programs/GIMP 3/bin/python.exe" tests/run_gimp_tests.py
+
 # Confirm the plugin registers in GIMP without launching the GUI.
 "$LOCALAPPDATA/Programs/GIMP 3/bin/gimp-console-3.2.exe" \
     -i -d -f --batch-interpreter=plug-in-script-fu-eval -b "(gimp-quit 0)"
 ```
+
+### How the integration tests work
+
+GIMP 3 registers `python-fu-eval` as a batch interpreter, so plugin code can be
+exercised against a live `Gimp` module with no display, no GUI and no
+third-party MCP server. `tests/run_gimp_tests.py` launches GIMP that way, finds
+the binary per platform, and parses `GIMPTEST|` markers out of GIMP's stdout;
+`tests/gimp_integration.py` is the body that runs inside.
+
+Two things cost real time to discover and will bite anyone extending them:
+
+- **`Gegl.init(None)` is required.** The plug-in lifecycle normally does it.
+  Without it `Gegl.Node().create_child()` warns
+  `g_hash_table_remove_all: assertion 'hash_table != NULL' failed`, the graph
+  silently no-ops, and every mask comes out blank at a constant byte size.
+- **`Gimp.Selection.bounds()` returns six values**, the PDB success flag first,
+  then `(non_empty, x1, y1, x2, y2)`. Unpacking it as five gives plausible
+  nonsense rather than an error.
+
+Validated against the bug they exist to catch: with the focused-mask translate
+disabled 3 of 4 fail, the selection landing jammed at (946,899)-(1024,1024)
+instead of (228,228)-(796,796). With the fix in place all 4 pass, the mask
+within 2px of its computed position.
 
 ## License
 
