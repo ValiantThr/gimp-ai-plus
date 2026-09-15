@@ -378,12 +378,19 @@ class GimpAIPlugin(Gimp.PlugIn):
     # percentage of the selection's shorter side. -1 means "do not clip".
     RESULT_MARGINS = (
         (0, "Clip to selection exactly"),
-        (10, "Small margin"),
-        (25, "Medium margin (recommended)"),
-        (50, "Large margin"),
+        (10, "Small margin - retouching and object removal"),
+        (25, "Medium margin"),
+        (50, "Large margin (recommended)"),
         (-1, "No clipping - show the whole region"),
     )
-    DEFAULT_RESULT_MARGIN = 25
+    # Large by default. The two failure modes are not symmetric: too small
+    # visibly mutilates a subject, while too large only means more of the
+    # surrounding area comes from the model - and that area is the model
+    # reproducing pixels it was handed, so it matches. Tested against a
+    # steampunk fly in an elliptical selection, where 25% still clipped the
+    # wings and 50% did not. Reduce it for object removal, where there is no
+    # subject to overflow and a tight edit is preferable.
+    DEFAULT_RESULT_MARGIN = 50
 
     def _get_result_margin_px(self, context_info):
         """Pixels to grow the result mask beyond the selection.
@@ -1329,7 +1336,7 @@ class GimpAIPlugin(Gimp.PlugIn):
                 if value == current_margin:
                     margin_combo.set_active(index)
             if margin_combo.get_active() < 0:
-                margin_combo.set_active(2)
+                margin_combo.set_active(3)
             margin_row.pack_start(margin_combo, False, False, 0)
             model_box.pack_start(margin_row, False, False, 0)
 

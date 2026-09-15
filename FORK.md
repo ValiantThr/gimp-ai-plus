@@ -254,11 +254,17 @@ wings and legs to the ellipse edge - the content was generated, then hidden.
 The mask is now grown before it is created, by a percentage of the selection's
 shorter side (4px to 256px), and the user's own selection is restored
 afterwards. **Result edge** in Settings offers exact clipping, small/medium/large
-margins, or none at all; the default is medium (25%).
+margins, or none at all; the default is **large (50%)**.
 
-The margin is safe because the model reproduces the surrounding area closely -
-it is the same pixels it was given - so what becomes visible blends in. Set it
-to "Clip to selection exactly" to restore upstream behaviour.
+Large rather than medium because the failure modes are not symmetric. Too small
+visibly mutilates a subject; too large only means more of the surrounding area
+comes from the model, and that area is the model reproducing pixels it was
+handed, so it matches. Confirmed in use: a steampunk fly in an elliptical
+selection still lost its wings at 25% and came through intact at 50%.
+
+Reduce it for object removal and retouching, where there is no subject to
+overflow and a tight edit is preferable. "Clip to selection exactly" restores
+upstream behaviour.
 
 ### Scripting the plugin
 

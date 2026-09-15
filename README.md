@@ -106,8 +106,12 @@ prompts before committing.
 **Result edge** controls how tightly an inpaint is clipped to your selection.
 Subjects rarely fit a selection outline — a fly drawn into an ellipse would
 otherwise lose its wings to the ellipse edge — so by default the result is
-allowed to spill a little past it. Set it to *Clip to selection exactly* if you
-need the edit strictly confined.
+allowed to spill past it fairly generously. The extra area is the model
+reproducing the surroundings it was given, so it blends in.
+
+Turn it down for object removal or retouching, where a tight edit is what you
+want, or to *Clip to selection exactly* to confine the change strictly to your
+selection.
 
 **Max resolution** is also there. GPT-Image-2 and newer accept almost any
 output size, so the plugin sizes each request to match the area you are
