@@ -46,9 +46,9 @@ def test_basic_context_extraction():
     assert ext_x2 >= sel_x2, f"Extract right {ext_x2} should be >= selection right {sel_x2}"
     assert ext_y2 >= sel_y2, f"Extract bottom {ext_y2} should be >= selection bottom {sel_y2}"
 
-    print(f"✓ Selection ({sel_x1},{sel_y1}) to ({sel_x2},{sel_y2})")
-    print(f"✓ Extract region ({ext_x1},{ext_y1}) to ({ext_x2},{ext_y2}), size {ext_width}x{ext_height}")
-    print(f"✓ Target shape: {result['target_shape']}")
+    print(f"[ok] Selection ({sel_x1},{sel_y1}) to ({sel_x2},{sel_y2})")
+    print(f"[ok] Extract region ({ext_x1},{ext_y1}) to ({ext_x2},{ext_y2}), size {ext_width}x{ext_height}")
+    print(f"[ok] Target shape: {result['target_shape']}")
 
 
 def test_boundary_selection():
@@ -66,7 +66,7 @@ def test_boundary_selection():
     assert is_valid, f"Validation failed: {error_msg}"
 
     # Check padding info
-    print(f"✓ Boundary selection, needs_padding: {result['needs_padding']}")
+    print(f"[ok] Boundary selection, needs_padding: {result['needs_padding']}")
     if result['needs_padding']:
         padding_info = result['padding_info']
         if 'padding' in padding_info:
@@ -89,7 +89,7 @@ def test_corner_selection():
     assert is_valid, f"Corner selection validation failed: {error_msg}"
 
     # Check padding info
-    print(f"✓ Corner selection, needs_padding: {result['needs_padding']}")
+    print(f"[ok] Corner selection, needs_padding: {result['needs_padding']}")
     if result['needs_padding']:
         padding_info = result['padding_info']
         if 'padding' in padding_info:
@@ -115,11 +115,11 @@ def test_large_selection():
 
     # Extract region should cover selection
     ext_x1, ext_y1, ext_width, ext_height = result['extract_region']
-    print(f"✓ Large selection {sel_x2-sel_x1}x{sel_y2-sel_y1}, extract region: {ext_width}x{ext_height}")
+    print(f"[ok] Large selection {sel_x2-sel_x1}x{sel_y2-sel_y1}, extract region: {ext_width}x{ext_height}")
 
     # Should use large target shape for large selections
     target_shape = result['target_shape']
-    print(f"✓ Target shape: {target_shape}")
+    print(f"[ok] Target shape: {target_shape}")
     assert target_shape in [(1024, 1024), (1536, 1024), (1024, 1536)], f"Expected valid target shape, got {target_shape}"
 
 
@@ -139,7 +139,7 @@ def test_small_selection():
 
     # Should use small target shape for small selections
     target_shape = result['target_shape']
-    print(f"✓ Small selection {sel_x2-sel_x1}x{sel_y2-sel_y1}, target shape: {target_shape}")
+    print(f"[ok] Small selection {sel_x2-sel_x1}x{sel_y2-sel_y1}, target shape: {target_shape}")
     assert target_shape in [(1024, 1024), (1536, 1024), (1024, 1536)], f"Expected valid target shape, got {target_shape}"
 
 
@@ -160,7 +160,7 @@ def test_no_selection():
     assert 'target_shape' in result
 
     # Should be in full mode
-    print(f"✓ No selection, mode: {result['mode']}, target shape: {result['target_shape']}")
+    print(f"[ok] No selection, mode: {result['mode']}, target shape: {result['target_shape']}")
 
 
 def test_mask_coordinates():
@@ -191,8 +191,8 @@ def test_mask_coordinates():
     assert mask_coords['x1'] < mask_coords['x2']
     assert mask_coords['y1'] < mask_coords['y2']
 
-    print(f"✓ Mask coordinates: ({mask_coords['x1']},{mask_coords['y1']}) to ({mask_coords['x2']},{mask_coords['y2']})")
-    print(f"✓ Scale factor: {mask_coords['scale_factor']}")
+    print(f"[ok] Mask coordinates: ({mask_coords['x1']},{mask_coords['y1']}) to ({mask_coords['x2']},{mask_coords['y2']})")
+    print(f"[ok] Scale factor: {mask_coords['scale_factor']}")
 
 
 def test_placement_coordinates():
@@ -225,8 +225,8 @@ def test_placement_coordinates():
     )
     assert covers_selection, f"Placement ({paste_x},{paste_y}) {result_w}x{result_h} should cover selection ({sel_x1},{sel_y1}) to ({sel_x2},{sel_y2})"
 
-    print(f"✓ Placement: ({paste_x},{paste_y}) size {result_w}x{result_h}")
-    print(f"✓ Covers selection: {covers_selection}")
+    print(f"[ok] Placement: ({paste_x},{paste_y}) size {result_w}x{result_h}")
+    print(f"[ok] Covers selection: {covers_selection}")
 
 
 def test_mathematical_properties():
@@ -251,7 +251,7 @@ def test_mathematical_properties():
         assert results['mask_coordinates_valid'], "Mask coordinates should be valid"
         assert results['placement_covers_selection'], "Placement should cover selection"
         
-        print("✓ All properties validated successfully")
+        print("[ok] All properties validated successfully")
 
 
 def test_edge_cases():
@@ -263,33 +263,33 @@ def test_edge_cases():
     result = extract_context_with_selection(100, 100, 10, 10, 90, 90)
     is_valid, _ = validate_context_info(result)
     assert is_valid, "Small image should be valid"
-    print("✓ Very small image handled correctly")
+    print("[ok] Very small image handled correctly")
 
     # Very large image
     print("Testing very large image...")
     result = extract_context_with_selection(10000, 8000, 1000, 1000, 5000, 4000)
     is_valid, _ = validate_context_info(result)
     assert is_valid, "Large image should be valid"
-    print("✓ Very large image handled correctly")
+    print("[ok] Very large image handled correctly")
 
     # Square selection
     print("Testing square selection...")
     result = extract_context_with_selection(1000, 1000, 400, 400, 600, 600)
     is_valid, _ = validate_context_info(result)
     assert is_valid, "Square selection should be valid"
-    print("✓ Square selection handled correctly")
+    print("[ok] Square selection handled correctly")
 
     # Thin rectangle selection
     print("Testing thin rectangle selection...")
     result = extract_context_with_selection(1000, 800, 100, 300, 900, 320)
     is_valid, _ = validate_context_info(result)
     assert is_valid, "Thin rectangle should be valid"
-    print("✓ Thin rectangle handled correctly")
+    print("[ok] Thin rectangle handled correctly")
 
 
 def run_all_tests():
     """Run all coordinate transformation tests."""
-    print("🧪 Running Coordinate Transformation Tests")
+    print("Running Coordinate Transformation Tests")
     print("=" * 60)
     
     try:
@@ -305,18 +305,18 @@ def run_all_tests():
         test_edge_cases()
         
         print("\n" + "=" * 60)
-        print("🎉 ALL TESTS PASSED!")
-        print("✓ Context extraction works correctly")
-        print("✓ Mask coordinates are valid")
-        print("✓ Placement coordinates align properly")
-        print("✓ Edge cases are handled")
-        print("✓ Mathematical properties are satisfied")
+        print("ALL TESTS PASSED!")
+        print("[ok] Context extraction works correctly")
+        print("[ok] Mask coordinates are valid")
+        print("[ok] Placement coordinates align properly")
+        print("[ok] Edge cases are handled")
+        print("[ok] Mathematical properties are satisfied")
         
     except AssertionError as e:
-        print(f"\n❌ TEST FAILED: {e}")
+        print(f"\n[FAIL] TEST FAILED: {e}")
         return False
     except Exception as e:
-        print(f"\n💥 UNEXPECTED ERROR: {e}")
+        print(f"\nUNEXPECTED ERROR: {e}")
         return False
     
     return True

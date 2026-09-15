@@ -42,11 +42,11 @@ def test_aspect_ratio_extension():
     total_padding = pad_left + pad_top + pad_right + pad_bottom
     
     if total_padding == 0:
-        print("✅ Perfect! No padding needed - aspect ratio matched exactly")
+        print("[ok] Perfect! No padding needed - aspect ratio matched exactly")
     elif total_padding < 236:  # Original padding was (0, 118, 0, 118) = 236 total
-        print(f"✅ Good! Padding reduced to {total_padding} (was ~236)")
+        print(f"[ok] Good! Padding reduced to {total_padding} (was ~236)")
     else:
-        print(f"⚠️  Padding still needed: {total_padding}")
+        print(f"[warn]  Padding still needed: {total_padding}")
     
     # Test another case: wide selection that should extend vertically
     print("\n--- Testing Wide Selection (Should Extend Vertically) ---")
@@ -72,17 +72,17 @@ def test_aspect_ratio_extension():
 
 def run_test():
     """Run the aspect ratio extension test"""
-    print("🧪 Testing Aspect Ratio Extension Logic")
+    print("Testing Aspect Ratio Extension Logic")
     print("=" * 60)
     
     try:
         test_aspect_ratio_extension()
         print("\n" + "=" * 60)
-        print("🎉 ASPECT RATIO EXTENSION TESTS COMPLETED!")
+        print("ASPECT RATIO EXTENSION TESTS COMPLETED!")
         return True
         
     except Exception as e:
-        print(f"\n❌ TEST FAILED: {e}")
+        print(f"\n[FAIL] TEST FAILED: {e}")
         import traceback
         traceback.print_exc()
         return False

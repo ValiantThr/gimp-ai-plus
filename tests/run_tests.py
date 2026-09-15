@@ -31,20 +31,20 @@ def main():
         success = run_client_tests() and success
 
         if success:
-            print("\n🎉 All tests completed successfully!")
+            print("\nAll tests completed successfully!")
             print("The coordinate transformation system is mathematically correct.")
             return 0
         else:
-            print("\n❌ Some tests failed.")
+            print("\n[FAIL] Some tests failed.")
             print("Please check the coordinate transformation logic.")
             return 1
             
     except ImportError as e:
-        print(f"❌ Failed to import test modules: {e}")
+        print(f"[FAIL] Failed to import test modules: {e}")
         print("Make sure coordinate_utils.py is in the parent directory.")
         return 1
     except Exception as e:
-        print(f"💥 Unexpected error running tests: {e}")
+        print(f"Unexpected error running tests: {e}")
         return 1
 
 

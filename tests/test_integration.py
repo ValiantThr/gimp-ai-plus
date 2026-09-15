@@ -31,7 +31,7 @@ def test_new_format_validation():
     is_valid, msg = validate_context_info(result)
     assert is_valid, f"New format validation failed: {msg}"
     
-    print("✓ New extract_context_with_selection works")
+    print("[ok] New extract_context_with_selection works")
     print(f"  Target shape: {result['target_shape']}")
     print(f"  Extract region: {result['extract_region']}")
     print(f"  Mode: {result['mode']}")
@@ -60,7 +60,7 @@ def test_shape_selection_scenarios():
         assert actual_shape == expected_shape, \
             f"{desc}: Expected {expected_shape}, got {actual_shape}"
         
-        print(f"✓ {desc}: {actual_shape}")
+        print(f"[ok] {desc}: {actual_shape}")
 
 
 def test_full_vs_focused_mode():
@@ -77,7 +77,7 @@ def test_full_vs_focused_mode():
     
     assert focused['mode'] == 'focused'
     assert focused['extract_region'] != (0, 0, img_w, img_h)
-    print(f"✓ Focused mode: extracts region {focused['extract_region']}")
+    print(f"[ok] Focused mode: extracts region {focused['extract_region']}")
     print(f"  Shape: {focused['target_shape']}")
     
     # Full mode - uses entire image
@@ -88,7 +88,7 @@ def test_full_vs_focused_mode():
     assert full['mode'] == 'full'
     assert full['extract_region'] == (0, 0, img_w, img_h)
     assert full['target_shape'] == (1536, 1024)  # Landscape for 16:9
-    print(f"✓ Full mode: uses entire image")
+    print(f"[ok] Full mode: uses entire image")
     print(f"  Shape: {full['target_shape']}")
 
 
@@ -105,12 +105,12 @@ def test_api_size_formatting():
     for shape, expected_str in shapes:
         api_size = f"{shape[0]}x{shape[1]}"
         assert api_size == expected_str, f"Format error: {api_size} != {expected_str}"
-        print(f"✓ {shape} -> '{api_size}'")
+        print(f"[ok] {shape} -> '{api_size}'")
 
 
 def run_all_tests():
     """Run all integration tests."""
-    print("🧪 Running Integration Tests")
+    print("Running Integration Tests")
     print("=" * 60)
     
     try:
@@ -120,19 +120,19 @@ def run_all_tests():
         test_api_size_formatting()
         
         print("\n" + "=" * 60)
-        print("🎉 ALL INTEGRATION TESTS PASSED!")
-        print("✓ New format validation works")
-        print("✓ Shape selection works correctly")
-        print("✓ Processing modes work as expected")
-        print("✓ API formatting is correct")
+        print("ALL INTEGRATION TESTS PASSED!")
+        print("[ok] New format validation works")
+        print("[ok] Shape selection works correctly")
+        print("[ok] Processing modes work as expected")
+        print("[ok] API formatting is correct")
         
     except AssertionError as e:
-        print(f"\n❌ TEST FAILED: {e}")
+        print(f"\n[FAIL] TEST FAILED: {e}")
         import traceback
         traceback.print_exc()
         return False
     except Exception as e:
-        print(f"\n💥 UNEXPECTED ERROR: {e}")
+        print(f"\nUNEXPECTED ERROR: {e}")
         import traceback
         traceback.print_exc()
         return False

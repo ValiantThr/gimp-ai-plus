@@ -2890,7 +2890,7 @@ class GimpAIPlugin(Gimp.PlugIn):
 
                         # Check if dimensions match
                         if img_width == mask_width and img_height == mask_height:
-                            print("DEBUG: ✅ Image and mask dimensions match!")
+                            print("DEBUG: [ok] Image and mask dimensions match!")
                         else:
                             print(
                                 f"DEBUG: ❌ DIMENSION MISMATCH! Image: {img_width}x{img_height}, Mask: {mask_width}x{mask_height}"

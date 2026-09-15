@@ -42,9 +42,9 @@ def test_optimal_shape_selection():
     for width, height, expected, desc in test_cases:
         result = get_optimal_openai_shape(width, height)
         assert result == expected, f"Failed for {desc}: {width}x{height} -> got {result}, expected {expected}"
-        print(f"✓ {desc}: {width}x{height} -> {result}")
+        print(f"[ok] {desc}: {width}x{height} -> {result}")
     
-    print("✓ All shape selections correct")
+    print("[ok] All shape selections correct")
 
 
 def test_padding_calculations():
@@ -79,7 +79,7 @@ def test_padding_calculations():
         assert total_width == tgt_w, f"Padded width {total_width} != target {tgt_w}"
         assert total_height == tgt_h, f"Padded height {total_height} != target {tgt_h}"
         
-        print(f"✓ {desc}: scale={scale:.2f}, padding=({pad_left},{pad_top},{pad_right},{pad_bottom})")
+        print(f"[ok] {desc}: scale={scale:.2f}, padding=({pad_left},{pad_top},{pad_right},{pad_bottom})")
 
 
 def test_context_extraction_with_shapes():
@@ -103,7 +103,7 @@ def test_context_extraction_with_shapes():
     assert sel_in_extract[0] >= 0
     assert sel_in_extract[1] >= 0
     
-    print(f"✓ Focused extraction: shape={result['target_shape']}, needs_padding={result['needs_padding']}")
+    print(f"[ok] Focused extraction: shape={result['target_shape']}, needs_padding={result['needs_padding']}")
     
     # Test full mode
     result = extract_context_with_selection(img_w, img_h, sel_x1, sel_y1, sel_x2, sel_y2, mode='full')
@@ -112,7 +112,7 @@ def test_context_extraction_with_shapes():
     assert result['extract_region'] == (0, 0, img_w, img_h)
     assert result['target_shape'] == (1536, 1024)  # Landscape shape for 16:9
     
-    print(f"✓ Full extraction: shape={result['target_shape']}")
+    print(f"[ok] Full extraction: shape={result['target_shape']}")
     
     # Test no selection
     result = extract_context_with_selection(img_w, img_h, 0, 0, 0, 0, has_selection=False)
@@ -120,7 +120,7 @@ def test_context_extraction_with_shapes():
     assert result['has_selection'] == False
     assert 'target_shape' in result
     
-    print(f"✓ No selection: shape={result['target_shape']}")
+    print(f"[ok] No selection: shape={result['target_shape']}")
 
 
 def test_boundary_aware_extraction():
@@ -140,7 +140,7 @@ def test_boundary_aware_extraction():
     assert extract_x1 >= 0, "Extract should not go beyond left edge"
     assert extract_y1 >= 0, "Extract should not go beyond top edge"
     
-    print(f"✓ Top-left corner: extract at ({extract_x1},{extract_y1})")
+    print(f"[ok] Top-left corner: extract at ({extract_x1},{extract_y1})")
     
     # Selection near bottom-right corner
     sel_x1, sel_y1, sel_x2, sel_y2 = 850, 650, 950, 750
@@ -156,7 +156,7 @@ def test_boundary_aware_extraction():
     assert extract_x2 <= img_w, "Extract should not go beyond right edge"
     assert extract_y2 <= img_h, "Extract should not go beyond bottom edge"
     
-    print(f"✓ Bottom-right corner: extract ends at ({extract_x2},{extract_y2})")
+    print(f"[ok] Bottom-right corner: extract ends at ({extract_x2},{extract_y2})")
 
 
 def test_result_placement():
@@ -179,7 +179,7 @@ def test_result_placement():
     assert placement['position'] == (0, 0)
     assert placement['size'] == original_shape
     
-    print(f"✓ Full mode placement: scale={placement['scale']}")
+    print(f"[ok] Full mode placement: scale={placement['scale']}")
     
     # Focused mode placement
     context_info = {
@@ -196,7 +196,7 @@ def test_result_placement():
     assert placement['position'] == (100, 50)
     assert placement['size'] == (800, 600)
     
-    print(f"✓ Focused mode placement: position={placement['position']}, size={placement['size']}")
+    print(f"[ok] Focused mode placement: position={placement['position']}, size={placement['size']}")
 
 
 def test_scale_calculations():
@@ -222,7 +222,7 @@ def test_scale_calculations():
         assert abs(scale_y - target[1]/source[1]) < 0.001, f"scale_y calculation wrong"
         assert uniform == min(scale_x, scale_y), f"uniform_scale should be min"
         
-        print(f"✓ {desc}: scale_x={scale_x:.2f}, scale_y={scale_y:.2f}, uniform={uniform:.2f}")
+        print(f"[ok] {desc}: scale_x={scale_x:.2f}, scale_y={scale_y:.2f}, uniform={uniform:.2f}")
 
 
 def test_aspect_ratio_preservation():
@@ -249,7 +249,7 @@ def test_aspect_ratio_preservation():
     scaled_ratio = scaled_w / scaled_h
     assert abs(original_ratio - scaled_ratio) < 0.01, f"Aspect ratio not preserved"
     
-    print(f"✓ Aspect ratios preserved correctly")
+    print(f"[ok] Aspect ratios preserved correctly")
 
 
 def test_edge_cases():
@@ -273,12 +273,12 @@ def test_edge_cases():
     extract = result['extract_region']
     assert extract[0] >= 0 and extract[1] >= 0, "Extract should be clamped to image bounds"
     
-    print("✓ Edge cases handled correctly")
+    print("[ok] Edge cases handled correctly")
 
 
 def run_all_tests():
     """Run all shape-aware function tests."""
-    print("🧪 Running Shape-Aware Function Tests")
+    print("Running Shape-Aware Function Tests")
     print("=" * 60)
     
     try:
@@ -292,20 +292,20 @@ def run_all_tests():
         test_edge_cases()
         
         print("\n" + "=" * 60)
-        print("🎉 ALL SHAPE-AWARE TESTS PASSED!")
-        print("✓ Optimal shape selection works")
-        print("✓ Padding calculations are correct")
-        print("✓ Boundary-aware extraction works")
-        print("✓ Result placement is accurate")
-        print("✓ Aspect ratios are preserved")
+        print("ALL SHAPE-AWARE TESTS PASSED!")
+        print("[ok] Optimal shape selection works")
+        print("[ok] Padding calculations are correct")
+        print("[ok] Boundary-aware extraction works")
+        print("[ok] Result placement is accurate")
+        print("[ok] Aspect ratios are preserved")
         
     except AssertionError as e:
-        print(f"\n❌ TEST FAILED: {e}")
+        print(f"\n[FAIL] TEST FAILED: {e}")
         import traceback
         traceback.print_exc()
         return False
     except Exception as e:
-        print(f"\n💥 UNEXPECTED ERROR: {e}")
+        print(f"\nUNEXPECTED ERROR: {e}")
         import traceback
         traceback.print_exc()
         return False

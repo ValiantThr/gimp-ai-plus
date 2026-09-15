@@ -79,42 +79,48 @@ Environment:
 
 ## Issues found during baseline
 
-Recorded here so they are not rediscovered later. None are regressions from the fork; all
-are present in upstream `v0.14.0`.
+Found while reading upstream `v0.14.0`. None are regressions from the fork.
+Status is updated as phases land.
 
-1. **No timeout on two network calls.** `gimp-ai-plugin.py:3852` and `:3987` call
-   `urllib.request.urlopen(req)` directly, bypassing the `_make_url_request()` helper. A
-   stalled connection hangs the worker thread with no cancel path.
-2. **TLS verification silently disabled on fallback.** `_make_url_request()` at `:137` retries
-   with `check_hostname = False` and `ssl.CERT_NONE` on any certificate error, sending the API
-   key over an unverified connection with only a debug print. **Resolved by the smoke test
-   above:** GIMP 3.2.6 ships a working CA bundle, so verification succeeds and the fallback is
-   never legitimately needed. Phase 1 deletes it and fails loudly instead.
-3. **Duplicated generation logic.** `_call_openai_generation()` at `:1676` and the threaded
-   copy at `:3950` have diverged in size defaults and error handling.
-4. **API error bodies mostly swallowed.** Only the edits path at `:3059` reads
-   `HTTPError.read()`; generation failures surface as generic errors.
-5. **Plugin stdout goes nowhere on Windows.** `pygimp_win.interp` maps `.py` plug-ins to
-   `pythonw.exe`, which has no console, so all 339 `print()` calls are discarded in normal GUI
-   use. Debugging requires `gimp-console-3.2.exe`. A real logging path is needed.
-6. **Emoji printed to a cp1252 stdout.** `gimp-ai-plugin.py:2997` prints `"DEBUG: ✅ ..."` on
-   the inpaint happy path, and `tests/run_tests.py` does the same throughout — which is why the
-   suite cannot run on Windows without `PYTHONIOENCODING=utf-8`. The 18 emoji `Gimp.message()`
-   calls are safe; those go through GLib, not stdout.
-7. **Missing `set_i18n()` override.** GIMP 3.2 emits nine locale-catalog warnings per run
-   without it.
-8. **Dead imports.** The three `email.mime.*` imports at `:2682` are unused; multipart bodies
-   are hand-rolled with a uuid boundary.
-9. **Stale project docs.** `.github/copilot-instructions.md` describes v0.8, names the wrong
-   config path, and states the API accepts only three fixed sizes — no longer true for the 2.x
-   models. It needs rewriting for this fork.
+1. ~~**No timeout on two network calls.**~~ **Fixed in Phase 1.** Both bare
+   `urllib.request.urlopen(req)` calls are gone; every request now goes through
+   `openai_client`, which always sets a timeout.
+2. ~~**TLS verification silently disabled on fallback.**~~ **Fixed in Phase 1.**
+   The `CERT_NONE` retry is deleted. The Phase 0 smoke test showed GIMP 3.2.6
+   ships a working CA bundle, so verification succeeds normally and the fallback
+   only ever masked a genuine problem. Certificate failures now raise.
+3. ~~**Duplicated generation logic.**~~ **Fixed in Phase 1.** The threaded copy
+   turned out to be dead code and was deleted outright, along with a second dead
+   method. It also contained a wait loop whose condition
+   `while "success" not in layer_created` was true immediately, so it read the
+   result before the main thread had produced it.
+4. ~~**API error bodies mostly swallowed.**~~ **Fixed in Phase 1.** `OpenAIError`
+   carries status, code and message from the API's own response, with
+   `user_message()` for display.
+5. **Plugin stdout goes nowhere on Windows.** `pygimp_win.interp` maps `.py`
+   plug-ins to `pythonw.exe`, which has no console, so `print()` output is
+   discarded in normal GUI use. Debugging requires `gimp-console-3.2.exe`. A real
+   logging path is still needed. *(Phase 5.)*
+6. ~~**Emoji printed to a cp1252 stdout.**~~ **Fixed in Phase 1.** All `print()`
+   output across the plugin and tests is ASCII; the suite now runs on Windows
+   with no `PYTHONIOENCODING` workaround. `Gimp.message()` keeps its emoji —
+   those go through GLib and are safe.
+7. **Missing `set_i18n()` override.** GIMP 3.2 emits nine locale-catalog warnings
+   per run without it. *(Phase 5.)*
+8. ~~**Dead imports.**~~ **Fixed in Phase 1.** Removed with
+   `_create_multipart_data`, whose replacement lives in `openai_client`.
+9. **Stale project docs.** `README.md` and `INSTALL.md` are corrected for the
+   three-file layout, but `.github/copilot-instructions.md` still describes v0.8,
+   names the wrong config path, and claims the API accepts only three fixed
+   sizes. *(Phase 3 invalidates the last of those; rewrite then.)*
 
 ## Roadmap
 
 - **Phase 0 — Baseline.** *(complete)* Fork, verify upstream against GIMP 3.2.6, record findings,
   add `tools/smoke_test.py`.
-- **Phase 1 — Client extraction.** Split out an `openai_client` module with one request
-  builder, one error handler, one timeout policy, one TLS policy. Fixes issues 1–4.
+- **Phase 1 — Client extraction.** *(complete)* `openai_client.py` owns one request
+  builder, one error handler, one timeout policy, one TLS policy. Closed issues 1–4, 6
+  and 8, and deleted 265 lines of dead networking code.
 - **Phase 2 — Model registry and picker.** Per-model capability entries; model and quality
   dropdowns in Settings. Default to `gpt-image-2.5-flare`.
 - **Phase 3 — Resolution pipeline.** Replace fixed shapes in `coordinate_utils.py` with
@@ -128,8 +134,7 @@ are present in upstream `v0.14.0`.
 
 ```bash
 # Unit tests, using GIMP's own Python so the interpreter matches production.
-# PYTHONIOENCODING is required on Windows until issue 6 is fixed.
-PYTHONIOENCODING=utf-8 "$LOCALAPPDATA/Programs/GIMP 3/bin/python.exe" tests/run_tests.py
+"$LOCALAPPDATA/Programs/GIMP 3/bin/python.exe" tests/run_tests.py
 
 # API reachability, TLS, and per-model cost. Needs OPENAI_API_KEY in the environment.
 "$LOCALAPPDATA/Programs/GIMP 3/bin/python.exe" tools/smoke_test.py
