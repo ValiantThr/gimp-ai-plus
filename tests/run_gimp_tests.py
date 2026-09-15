@@ -127,7 +127,7 @@ def run(gimp, verbose=False):
         return 1
 
     for status, name, detail in results:
-        symbol = "[ok]  " if status == "PASS" else "[FAIL]"
+        symbol = {"PASS": "[ok]  ", "SKIP": "[skip]"}.get(status, "[FAIL]")
         print(f"  {symbol} {name}")
         if detail:
             print(f"         {detail}")

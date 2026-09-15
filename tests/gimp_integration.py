@@ -345,11 +345,179 @@ def test_mask_matches_image_dimensions(plugin):
     return True
 
 
+def call_procedure(name, image, layer, **args):
+    """Invoke one of our procedures non-interactively. Returns the PDB status."""
+    proc = Gimp.get_pdb().lookup_procedure(name)
+    if proc is None:
+        raise AssertionError(f"{name} is not registered")
+    config = proc.create_config()
+    config.set_property("run-mode", Gimp.RunMode.NONINTERACTIVE)
+    config.set_property("image", image)
+    # "drawables" is deliberately left unset. It is a GimpCoreObjectArray,
+    # which cannot be assigned from Python here - a list, a tuple and a bare
+    # layer all raise TypeError - and none of the run_* methods read it; they
+    # use image.get_selected_layers() instead. Its default is None.
+    for key, value in args.items():
+        config.set_property(key, value)
+    result = proc.run(config)
+    return result.index(0)
+
+
+def test_installed_plugin_is_current(plugin):
+    """The installed plugin must match the checkout.
+
+    Half these tests import the plugin from the repo; the procedure-level
+    ones go through the PDB and therefore exercise whatever GIMP has
+    registered, which is the copy in the plug-ins directory. When those
+    diverge the failures are baffling - a fix that is plainly present in the
+    source appears not to work.
+    """
+    name = "installed_plugin_is_current"
+    import hashlib
+
+    installed_dir = os.path.join(Gimp.directory(), "plug-ins", "gimp-ai-plugin")
+    mismatched, missing = [], []
+    for filename in ("gimp-ai-plugin.py", "coordinate_utils.py", "openai_client.py"):
+        source = os.path.join(repo_root(), filename)
+        target = os.path.join(installed_dir, filename)
+        if not os.path.exists(target):
+            missing.append(filename)
+            continue
+        digest = lambda p: hashlib.sha256(open(p, "rb").read()).hexdigest()
+        if digest(source) != digest(target):
+            mismatched.append(filename)
+
+    if missing or mismatched:
+        detail = []
+        if missing:
+            detail.append(f"not installed: {', '.join(missing)}")
+        if mismatched:
+            detail.append(f"stale: {', '.join(mismatched)}")
+        detail.append(f"copy the repo files to {installed_dir} and re-run")
+        emit("FAIL", name, "; ".join(detail))
+        return False
+
+    emit("PASS", name, f"installed copy matches the checkout ({installed_dir})")
+    return True
+
+
+def test_procedures_declare_arguments(plugin):
+    """Each procedure must expose the arguments that make it scriptable."""
+    name = "procedures_declare_arguments"
+    expected = {
+        "gimp-ai-inpaint": {"prompt", "mode"},
+        "gimp-ai-layer-generator": {"prompt"},
+        "gimp-ai-layer-composite": {"prompt", "use-mask"},
+    }
+    missing = []
+    found = {}
+    for proc_name, wanted in expected.items():
+        proc = Gimp.get_pdb().lookup_procedure(proc_name)
+        if proc is None:
+            missing.append(f"{proc_name}: not registered")
+            continue
+        names = {arg.name for arg in proc.get_arguments()}
+        found[proc_name] = sorted(names - {"run-mode", "image", "drawables"})
+        absent = wanted - names
+        if absent:
+            missing.append(f"{proc_name}: missing {sorted(absent)}")
+
+    if missing:
+        emit("FAIL", name, "; ".join(missing))
+        return False
+
+    detail = "; ".join(f"{k} {v}" for k, v in sorted(found.items()))
+    emit("PASS", name, detail)
+    return True
+
+
+def test_noninteractive_rejects_empty_prompt(plugin):
+    """An empty prompt must fail cleanly, before any API call.
+
+    Non-interactively there is no user to cancel, so a missing argument is a
+    calling error - and must not hang waiting on a dialog that will never be
+    shown. This test costs nothing: it returns before the network.
+    """
+    name = "noninteractive_rejects_empty_prompt"
+    image, layer = make_test_image(600, 600)
+    image.select_rectangle(Gimp.ChannelOps.REPLACE, 100, 100, 200, 200)
+    try:
+        status = call_procedure("gimp-ai-inpaint", image, layer, prompt="", mode="contextual")
+    finally:
+        image.delete()
+
+    if status != Gimp.PDBStatusType.CALLING_ERROR:
+        emit("FAIL", name, f"expected CALLING_ERROR, got {status}")
+        return False
+    emit("PASS", name, "empty prompt returns CALLING_ERROR without contacting the API")
+    return True
+
+
+def test_noninteractive_rejects_bad_mode(plugin):
+    """An unknown mode must be refused rather than silently defaulted."""
+    name = "noninteractive_rejects_bad_mode"
+    image, layer = make_test_image(600, 600)
+    image.select_rectangle(Gimp.ChannelOps.REPLACE, 100, 100, 200, 200)
+    try:
+        status = call_procedure(
+            "gimp-ai-inpaint", image, layer, prompt="a fly", mode="sideways"
+        )
+    finally:
+        image.delete()
+
+    if status != Gimp.PDBStatusType.CALLING_ERROR:
+        emit("FAIL", name, f"expected CALLING_ERROR, got {status}")
+        return False
+    emit("PASS", name, "unknown mode returns CALLING_ERROR")
+    return True
+
+
+def test_live_inpaint_end_to_end(plugin):
+    """A real inpaint, start to finish, adding a layer to the image.
+
+    Opt-in: costs money and needs a key. Enable with
+        GIMP_AI_LIVE_TESTS=1 and OPENAI_API_KEY set.
+    """
+    name = "live_inpaint_end_to_end"
+    if os.environ.get("GIMP_AI_LIVE_TESTS") != "1":
+        emit("SKIP", name, "set GIMP_AI_LIVE_TESTS=1 to run (makes a paid API call)")
+        return True
+    if not os.environ.get("OPENAI_API_KEY"):
+        emit("SKIP", name, "OPENAI_API_KEY is not set")
+        return True
+
+    image, layer = make_test_image(1024, 1024, fill="gray")
+    image.select_ellipse(Gimp.ChannelOps.REPLACE, 380, 380, 264, 264)
+    before = len(image.get_layers())
+    try:
+        status = call_procedure(
+            "gimp-ai-inpaint", image, layer,
+            prompt="a small brass gear, centred", mode="contextual",
+        )
+        after = len(image.get_layers())
+    finally:
+        image.delete()
+
+    if status != Gimp.PDBStatusType.SUCCESS:
+        emit("FAIL", name, f"expected SUCCESS, got {status}")
+        return False
+    if after <= before:
+        emit("FAIL", name, f"no layer added: {before} before, {after} after")
+        return False
+    emit("PASS", name, f"full inpaint succeeded, layers {before} -> {after}")
+    return True
+
+
 TESTS = [
+    test_installed_plugin_is_current,
     test_mask_marks_the_selection,
     test_mask_not_mostly_transparent,
     test_ellipse_selection_is_preserved,
     test_mask_matches_image_dimensions,
+    test_procedures_declare_arguments,
+    test_noninteractive_rejects_empty_prompt,
+    test_noninteractive_rejects_bad_mode,
+    test_live_inpaint_end_to_end,
 ]
 
 

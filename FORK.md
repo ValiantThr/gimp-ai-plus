@@ -142,11 +142,14 @@ Status is updated as phases land.
     coordinate and mask methods need none of that. `tests/gimp_integration.py`
     works around it by grafting the methods onto a plain object. Phase 3 should
     lift them into a class that does not inherit from `Gimp.PlugIn`.
-13. **Procedures are dialog-only.** All three take `run_mode` and ignore it,
-    always showing a GTK dialog, so nothing can drive a full inpaint headlessly.
-    Adding `RUN_NONINTERACTIVE` support would make the plugin scriptable (batch
-    processing was on upstream's own v1.0 wishlist) and allow true end-to-end
-    tests. *(Phase 2 or 3.)*
+13. ~~**Procedures are dialog-only.**~~ **Fixed.** All three took `run_mode`
+    and ignored it, always showing a GTK dialog. Each now declares its inputs as
+    procedure arguments (`prompt`, plus `mode` for inpainting and `use-mask` for
+    compositing) and skips the dialog under `RUN_NONINTERACTIVE`. Bad or missing
+    arguments return `CALLING_ERROR` rather than `CANCEL`, since without a user
+    there is nobody to cancel. This makes the plugin scriptable - batch
+    processing was on upstream's own v1.0 wishlist - and allows the full
+    pipeline to be tested end to end.
 
 ## Roadmap
 
@@ -183,6 +186,32 @@ Status is updated as phases land.
     -i -d -f --batch-interpreter=plug-in-script-fu-eval -b "(gimp-quit 0)"
 ```
 
+### Scripting the plugin
+
+Every procedure runs without a dialog, which is what makes end-to-end testing
+possible and also makes the plugin usable from scripts:
+
+```python
+proc = Gimp.get_pdb().lookup_procedure("gimp-ai-inpaint")
+config = proc.create_config()
+config.set_property("run-mode", Gimp.RunMode.NONINTERACTIVE)
+config.set_property("image", image)
+config.set_property("prompt", "a small brass gear, centred")
+config.set_property("mode", "contextual")   # or "full_image"
+result = proc.run(config)
+```
+
+Arguments: `gimp-ai-inpaint` takes `prompt` and `mode`, `gimp-ai-layer-generator`
+takes `prompt`, `gimp-ai-layer-composite` takes `prompt` and `use-mask`. Leave
+`drawables` unset - it is a `GimpCoreObjectArray` that cannot be assigned from
+Python, and no procedure reads it; they use `image.get_selected_layers()`.
+
+The live end-to-end test is opt-in because it makes a paid API call:
+
+```bash
+GIMP_AI_LIVE_TESTS=1 "$LOCALAPPDATA/Programs/GIMP 3/bin/python.exe" tests/run_gimp_tests.py
+```
+
 ### How the integration tests work
 
 GIMP 3 registers `python-fu-eval` as a batch interpreter, so plugin code can be
@@ -200,6 +229,12 @@ Two things cost real time to discover and will bite anyone extending them:
 - **`Gimp.Selection.bounds()` returns six values**, the PDB success flag first,
   then `(non_empty, x1, y1, x2, y2)`. Unpacking it as five gives plausible
   nonsense rather than an error.
+
+A further guard: `installed_plugin_is_current` compares the checkout against
+the copy in GIMP's plug-ins directory. The mask tests import from the repo
+while the procedure tests go through the PDB and therefore run the installed
+copy; when those diverge the failures are baffling, because a fix plainly
+present in the source appears not to work.
 
 Validated against the bug they exist to catch: with the focused-mask translate
 disabled 3 of 4 fail, the selection landing jammed at (946,899)-(1024,1024)

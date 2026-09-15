@@ -136,6 +136,31 @@ plug-ins/
 
 5. **Result**: A new layer is created, taking the base layer and intelligently modifying it to incorporate all visible layers
 
+## 🤖 Scripting
+
+All three features can be run without their dialogs, from Python-Fu or any
+GIMP scripting context:
+
+```python
+proc = Gimp.get_pdb().lookup_procedure("gimp-ai-inpaint")
+config = proc.create_config()
+config.set_property("run-mode", Gimp.RunMode.NONINTERACTIVE)
+config.set_property("image", image)
+config.set_property("prompt", "blue sky with clouds")
+config.set_property("mode", "contextual")   # or "full_image"
+proc.run(config)
+```
+
+| Procedure | Arguments |
+|---|---|
+| `gimp-ai-inpaint` | `prompt`, `mode` (`contextual` or `full_image`) |
+| `gimp-ai-layer-generator` | `prompt` |
+| `gimp-ai-layer-composite` | `prompt`, `use-mask` |
+
+Inpainting still requires an active selection. Set your API key in the settings
+or via `OPENAI_API_KEY` before running non-interactively, since there is no
+dialog to prompt for it.
+
 ## 🐛 Find Issues?
 
 - Check [TROUBLESHOOTING.md](TROUBLESHOOTING.md) first

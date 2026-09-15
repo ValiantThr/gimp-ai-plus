@@ -20,7 +20,7 @@ gi.require_version("Gegl", "0.4")
 gi.require_version("Gio", "2.0")
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
-from gi.repository import Gimp, GimpUi, GLib, Gegl, Gio, Gtk, Gdk
+from gi.repository import Gimp, GimpUi, GLib, Gegl, Gio, Gtk, Gdk, GObject
 
 # Import pure coordinate transformation functions
 from coordinate_utils import (
@@ -193,6 +193,134 @@ class GimpAIPlugin(Gimp.PlugIn):
 
         # No API key found
         return None
+
+    # ------------------------------------------------------------------
+    # Non-interactive support
+    #
+    # Every procedure accepts its inputs as declared arguments, so the whole
+    # pipeline can be driven from a script or a test without a GTK dialog.
+    # Upstream took run_mode and ignored it, which made the plugin
+    # unscriptable and left the image pipeline reachable only by a human
+    # clicking a button - the reason two significant bugs survived to a
+    # release.
+    # ------------------------------------------------------------------
+
+    PROCESSING_MODES = ("contextual", "full_image")
+
+    def _add_prompt_argument(self, procedure):
+        procedure.add_string_argument(
+            "prompt",
+            "Prompt",
+            "Text describing the desired result. Required when run "
+            "non-interactively; ignored otherwise, since the dialog asks.",
+            "",
+            GObject.ParamFlags.READWRITE,
+        )
+
+    def _add_mode_argument(self, procedure):
+        procedure.add_string_argument(
+            "mode",
+            "Processing mode",
+            "'contextual' for focused high-detail edits within the selection, "
+            "or 'full_image' to process the whole canvas.",
+            "contextual",
+            GObject.ParamFlags.READWRITE,
+        )
+
+    def _add_use_mask_argument(self, procedure):
+        procedure.add_boolean_argument(
+            "use-mask",
+            "Use selection mask",
+            "Limit composite changes to the current selection.",
+            False,
+            GObject.ParamFlags.READWRITE,
+        )
+
+    def _argument(self, config, name, default=None):
+        """Read a procedure argument, tolerating its absence."""
+        try:
+            value = config.get_property(name)
+        except (TypeError, ValueError):
+            return default
+        return default if value is None else value
+
+    def _resolve_prompt_inputs(
+        self, run_mode, config, title, image=None, show_mode_selection=True
+    ):
+        """Obtain (dialog, progress_label, prompt, mode).
+
+        Non-interactively these come from procedure arguments and there is no
+        dialog, so the first two are None - which every downstream call
+        already tolerates. Returns None when the run cannot proceed.
+        """
+        if run_mode != Gimp.RunMode.NONINTERACTIVE:
+            return self._show_prompt_dialog(
+                title, "", show_mode_selection=show_mode_selection, image=image
+            )
+
+        prompt = str(self._argument(config, "prompt", "") or "").strip()
+        if not prompt:
+            Gimp.message(
+                "AI: a non-empty 'prompt' argument is required when running "
+                "non-interactively."
+            )
+            return None
+
+        mode = "contextual"
+        if show_mode_selection:
+            mode = str(self._argument(config, "mode", "contextual") or "contextual")
+            if mode not in self.PROCESSING_MODES:
+                Gimp.message(
+                    f"AI: unknown mode '{mode}'. Expected one of: "
+                    + ", ".join(self.PROCESSING_MODES)
+                )
+                return None
+
+        print(f"DEBUG: Non-interactive run, prompt='{prompt}', mode='{mode}'")
+        return (None, None, prompt, mode)
+
+    def _resolve_composite_inputs(self, run_mode, config, image):
+        """Obtain (dialog, progress_label, prompt, layers, use_mask)."""
+        if run_mode != Gimp.RunMode.NONINTERACTIVE:
+            return self._show_composite_dialog(image)
+
+        prompt = str(self._argument(config, "prompt", "") or "").strip()
+        if not prompt:
+            Gimp.message(
+                "AI Layer Composite: a non-empty 'prompt' argument is required "
+                "when running non-interactively."
+            )
+            return None
+
+        # Same layer selection the dialog performs.
+        layers = [layer for layer in image.get_layers() if layer.get_visible()]
+        if len(layers) < 2:
+            Gimp.message(
+                "AI Layer Composite requires at least 2 visible layers; "
+                f"found {len(layers)}."
+            )
+            return None
+        if len(layers) > 16:
+            print(f"DEBUG: {len(layers)} visible layers, using the first 16")
+            layers = layers[:16]
+
+        use_mask = bool(self._argument(config, "use-mask", False))
+        print(
+            f"DEBUG: Non-interactive composite, prompt='{prompt}', "
+            f"layers={len(layers)}, use_mask={use_mask}"
+        )
+        return (None, None, prompt, layers, use_mask)
+
+    def _no_input_status(self, run_mode):
+        """PDB status when inputs could not be obtained.
+
+        Interactively this means the user cancelled. Non-interactively there
+        is nobody to cancel, so it can only be a bad or missing argument -
+        which callers need to be able to tell apart from a deliberate abort.
+        """
+        if run_mode == Gimp.RunMode.NONINTERACTIVE:
+            return Gimp.PDBStatusType.CALLING_ERROR
+        return Gimp.PDBStatusType.CANCEL
 
     def _get_processing_mode(self, dialog_mode=None):
         """Determine processing mode based on dialog selection or fallback to config"""
@@ -3334,6 +3462,8 @@ class GimpAIPlugin(Gimp.PlugIn):
             )
             procedure.set_menu_label("Inpainting")
             procedure.add_menu_path("<Image>/Filters/AI/")
+            self._add_prompt_argument(procedure)
+            self._add_mode_argument(procedure)
             return procedure
 
         elif name == "gimp-ai-layer-generator":
@@ -3342,6 +3472,7 @@ class GimpAIPlugin(Gimp.PlugIn):
             )
             procedure.set_menu_label("Image Generator")
             procedure.add_menu_path("<Image>/Filters/AI/")
+            self._add_prompt_argument(procedure)
             return procedure
 
         elif name == "gimp-ai-layer-composite":
@@ -3350,6 +3481,8 @@ class GimpAIPlugin(Gimp.PlugIn):
             )
             procedure.set_menu_label("Layer Composite")
             procedure.add_menu_path("<Image>/Filters/AI/")
+            self._add_prompt_argument(procedure)
+            self._add_use_mask_argument(procedure)
             return procedure
 
         return None
@@ -3386,21 +3519,24 @@ class GimpAIPlugin(Gimp.PlugIn):
 
         # Step 2: Get user prompt
         print("DEBUG: About to show prompt dialog...")
-        dialog_result = self._show_prompt_dialog(
+        dialog_result = self._resolve_prompt_inputs(
+            run_mode,
+            config,
             "AI Inpaint",
-            "",
-            show_mode_selection=True,
             image=image,
+            show_mode_selection=True,
         )
         print(f"DEBUG: Dialog returned: {repr(dialog_result)}")
 
         if not dialog_result:
-            print("DEBUG: User cancelled prompt dialog")
+            print("DEBUG: No usable input (cancelled, or bad arguments)")
             # Restore layer selection before returning
             if original_selected_layers:
                 image.set_selected_layers(original_selected_layers)
-                print("DEBUG: Restored layer selection after dialog cancel")
-            return procedure.new_return_values(Gimp.PDBStatusType.CANCEL, GLib.Error())
+                print("DEBUG: Restored layer selection after cancel")
+            return procedure.new_return_values(
+                self._no_input_status(run_mode), GLib.Error()
+            )
 
         # Extract dialog, progress_label, prompt and mode from dialog result
         dialog, progress_label, prompt, selected_mode = dialog_result
@@ -3561,16 +3697,18 @@ class GimpAIPlugin(Gimp.PlugIn):
 
         # Step 1: Show prompt dialog with layer selection
         print("DEBUG: Showing layer composite dialog...")
-        dialog_result = self._show_composite_dialog(image)
+        dialog_result = self._resolve_composite_inputs(run_mode, config, image)
         print(f"DEBUG: Dialog returned: {repr(dialog_result)}")
 
         if not dialog_result:
-            print("DEBUG: User cancelled prompt dialog")
+            print("DEBUG: No usable input (cancelled, or bad arguments)")
             # Restore layer selection before returning
             if original_selected_layers:
                 image.set_selected_layers(original_selected_layers)
-                print("DEBUG: Restored layer selection after dialog cancel")
-            return procedure.new_return_values(Gimp.PDBStatusType.CANCEL, GLib.Error())
+                print("DEBUG: Restored layer selection after cancel")
+            return procedure.new_return_values(
+                self._no_input_status(run_mode), GLib.Error()
+            )
 
         # Handle composite dialog result: (dialog, progress_label, prompt, layers, use_mask)
         dialog, progress_label, prompt, selected_layers, use_mask = dialog_result
@@ -3882,11 +4020,13 @@ class GimpAIPlugin(Gimp.PlugIn):
         print("DEBUG: Image Generator called!")
 
         # Show prompt dialog with API key checking (no mode selection for image generator)
-        dialog_result = self._show_prompt_dialog(
-            "Image Generator", "", show_mode_selection=False
+        dialog_result = self._resolve_prompt_inputs(
+            run_mode, config, "Image Generator", show_mode_selection=False
         )
         if not dialog_result:
-            return procedure.new_return_values(Gimp.PDBStatusType.CANCEL, GLib.Error())
+            return procedure.new_return_values(
+                self._no_input_status(run_mode), GLib.Error()
+            )
 
         # Extract dialog, progress_label, prompt and mode from dialog result
         dialog, progress_label, prompt, _ = (
