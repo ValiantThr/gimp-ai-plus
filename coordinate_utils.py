@@ -6,14 +6,155 @@ All coordinate calculations for context extraction, masking, and placement are h
 """
 
 
+FIXED_SHAPES = ((1024, 1024), (1536, 1024), (1024, 1536))
+
+# Defaults matching what the gpt-image-2.x models accept. Verified against the
+# live API; see FORK.md. A policy of None means "legacy fixed shapes".
+DEFAULT_SIZE_POLICY = {
+    'custom_sizes': True,
+    'max_edge': 3840,
+    'min_pixels': 655360,
+    'max_pixels': 8294400,
+    'max_aspect': 3.0,
+    'budget_pixels': None,   # user's own ceiling, to trade cost for quality
+}
+
+SIZE_GRANULARITY = 16
+
+
+def _round_to_granularity(value, granularity=SIZE_GRANULARITY, round_up=True):
+    """Round to a multiple of the API's size granularity, never below one step."""
+    if round_up:
+        stepped = -(-int(value) // granularity) * granularity
+    else:
+        stepped = (int(value) // granularity) * granularity
+    return max(granularity, stepped)
+
+
+def choose_target_shape(width, height, policy=None):
+    """
+    Pick the API output size for a source region.
+
+    With a custom-size policy the target follows the source's own aspect
+    ratio, so the content scales into it almost exactly and padding is at most
+    one 16px step per axis. That is the whole point of this function: the
+    legacy behaviour forced every region into one of three fixed shapes, which
+    meant letterboxing the content and throwing away resolution on the way.
+
+    The scale is chosen to avoid upscaling where possible - sending a region
+    larger than it really is costs money and invents detail - subject to the
+    API's minimum pixel budget, which may force an upscale for small regions.
+
+    Args:
+        width, height: source region size
+        policy: dict as DEFAULT_SIZE_POLICY, or None for legacy fixed shapes
+
+    Returns:
+        tuple: (target_width, target_height)
+    """
+    if width <= 0 or height <= 0:
+        return (1024, 1024)
+
+    if not policy or not policy.get('custom_sizes'):
+        return get_optimal_openai_shape(width, height)
+
+    max_edge = policy.get('max_edge') or 3840
+    min_pixels = policy.get('min_pixels') or 0
+    max_pixels = policy.get('max_pixels') or (max_edge * max_edge)
+    max_aspect = policy.get('max_aspect') or 0
+    budget = policy.get('budget_pixels')
+    if budget:
+        max_pixels = min(max_pixels, budget)
+
+    src_w, src_h = float(width), float(height)
+
+    # An extreme source cannot be represented exactly; clamp to the widest
+    # allowed ratio and let the usual padding absorb the difference.
+    if max_aspect:
+        ratio = src_w / src_h
+        if ratio > max_aspect:
+            src_h = src_w / max_aspect
+        elif ratio < 1.0 / max_aspect:
+            src_w = src_h * max_aspect
+
+    scale = 1.0
+    pixels = src_w * src_h
+    if pixels > max_pixels:
+        scale = (max_pixels / pixels) ** 0.5
+    longest = max(src_w, src_h) * scale
+    if longest > max_edge:
+        scale *= max_edge / longest
+    # Only now consider growing: the minimum budget is a hard API floor.
+    if min_pixels and (src_w * scale) * (src_h * scale) < min_pixels:
+        scale = (min_pixels / (src_w * src_h)) ** 0.5
+
+    target_w = _round_to_granularity(src_w * scale)
+    target_h = _round_to_granularity(src_h * scale)
+
+    # Rounding up can push a dimension past an edge limit; step back down.
+    target_w = min(target_w, _round_to_granularity(max_edge, round_up=False))
+    target_h = min(target_h, _round_to_granularity(max_edge, round_up=False))
+
+    # Shrink a step at a time if rounding up crossed the pixel ceiling.
+    while target_w * target_h > max_pixels and target_w > SIZE_GRANULARITY \
+            and target_h > SIZE_GRANULARITY:
+        if target_w >= target_h:
+            target_w -= SIZE_GRANULARITY
+        else:
+            target_h -= SIZE_GRANULARITY
+
+    # ...and grow if we are under the floor.
+    while min_pixels and target_w * target_h < min_pixels:
+        if target_w <= target_h and target_w + SIZE_GRANULARITY <= max_edge:
+            target_w += SIZE_GRANULARITY
+        elif target_h + SIZE_GRANULARITY <= max_edge:
+            target_h += SIZE_GRANULARITY
+        else:
+            break
+
+    return (int(target_w), int(target_h))
+
+
+def is_shape_allowed(target_width, target_height, policy=None):
+    """Would the API accept this size? Returns (ok, reason)."""
+    if not policy or not policy.get('custom_sizes'):
+        if (target_width, target_height) not in FIXED_SHAPES:
+            return False, f"target_shape must be one of {list(FIXED_SHAPES)}"
+        return True, ""
+
+    if target_width <= 0 or target_height <= 0:
+        return False, "dimensions must be positive"
+    if target_width % SIZE_GRANULARITY or target_height % SIZE_GRANULARITY:
+        return False, f"both edges must be divisible by {SIZE_GRANULARITY}"
+    max_edge = policy.get('max_edge')
+    if max_edge and max(target_width, target_height) > max_edge:
+        return False, f"the longest edge must be {max_edge} or less"
+    pixels = target_width * target_height
+    if policy.get('min_pixels') and pixels < policy['min_pixels']:
+        return False, "below the minimum pixel budget"
+    max_pixels = policy.get('max_pixels')
+    if max_pixels and pixels > max_pixels:
+        return False, "exceeds the maximum pixel budget"
+    max_aspect = policy.get('max_aspect')
+    if max_aspect:
+        ratio = max(target_width / target_height, target_height / target_width)
+        if ratio > max_aspect:
+            return False, f"the maximum aspect ratio is {max_aspect:g}:1"
+    return True, ""
+
+
 def get_optimal_openai_shape(width, height):
     """
     Select optimal OpenAI shape based on image dimensions.
-    
+
+    Legacy fixed-shape selection, still correct for the gpt-image-1 family,
+    which accepts only these three sizes. Models that take custom sizes go
+    through choose_target_shape() instead.
+
     Args:
         width: Image width in pixels
         height: Image height in pixels
-        
+
     Returns:
         tuple: (target_width, target_height) - one of (1024, 1024), (1536, 1024), (1024, 1536)
     """
@@ -73,7 +214,7 @@ def calculate_padding_for_shape(current_width, current_height, target_width, tar
 
 
 def extract_context_with_selection(img_width, img_height, sel_x1, sel_y1, sel_x2, sel_y2, 
-                                  mode='focused', has_selection=True):
+                                  mode='focused', has_selection=True, size_policy=None):
     """
     Extract context region around selection for inpainting with optimal shape.
     
@@ -83,13 +224,15 @@ def extract_context_with_selection(img_width, img_height, sel_x1, sel_y1, sel_x2
         sel_x1, sel_y1, sel_x2, sel_y2: Selection bounds
         mode: 'focused' for partial extraction, 'full' for whole image
         has_selection: Whether there's an active selection
+        size_policy: dict as DEFAULT_SIZE_POLICY for models that accept custom
+            sizes, or None for the legacy three fixed shapes
         
     Returns:
         dict: Context extraction parameters with optimal shape
     """
     if not has_selection:
         # No selection - use center area
-        target_shape = get_optimal_openai_shape(img_width, img_height)
+        target_shape = choose_target_shape(img_width, img_height, size_policy)
         # Create a default selection in center
         size = min(img_width, img_height, 512)
         sel_x1 = (img_width - size) // 2
@@ -102,7 +245,7 @@ def extract_context_with_selection(img_width, img_height, sel_x1, sel_y1, sel_x2
     
     if mode == 'full':
         # Send entire image with mask
-        target_shape = get_optimal_openai_shape(img_width, img_height)
+        target_shape = choose_target_shape(img_width, img_height, size_policy)
         padding_info = calculate_padding_for_shape(img_width, img_height, 
                                                   target_shape[0], target_shape[1])
         return {
@@ -147,13 +290,16 @@ def extract_context_with_selection(img_width, img_height, sel_x1, sel_y1, sel_x2
     ctx_height = ctx_y2 - ctx_y1
     
     # Determine optimal shape for context
-    target_shape = get_optimal_openai_shape(ctx_width, ctx_height)
+    target_shape = choose_target_shape(ctx_width, ctx_height, size_policy)
     target_aspect = target_shape[0] / target_shape[1]
     current_aspect = ctx_width / ctx_height if ctx_height > 0 else 1.0
     
-    # Try to extend extract region to match target aspect ratio
-    # This avoids padding when possible by using more of the available image
-    if abs(current_aspect - target_aspect) > 0.01:  # Only if aspect ratios differ significantly
+    # Try to extend extract region to match target aspect ratio.
+    # With a custom-size policy the target already follows the region's own
+    # aspect, so there is nothing to reconcile - and grabbing extra pixels
+    # purely to fill a fixed shape would waste resolution rather than save it.
+    custom = bool(size_policy and size_policy.get('custom_sizes'))
+    if not custom and abs(current_aspect - target_aspect) > 0.01:
         if target_aspect > current_aspect:
             # Need wider region: extend horizontally if possible
             target_width = int(ctx_height * target_aspect)
@@ -206,6 +352,10 @@ def extract_context_with_selection(img_width, img_height, sel_x1, sel_y1, sel_x2
     ctx_width = ctx_x2 - ctx_x1
     ctx_height = ctx_y2 - ctx_y1
     
+    if custom:
+        # The region may have shifted against image boundaries above.
+        target_shape = choose_target_shape(ctx_width, ctx_height, size_policy)
+
     padding_info = calculate_padding_for_shape(ctx_width, ctx_height,
                                               target_shape[0], target_shape[1])
     
@@ -370,7 +520,7 @@ def calculate_placement_coordinates(context_info):
     }
 
 
-def validate_context_info(context_info):
+def validate_context_info(context_info, size_policy=None):
     """
     Validate that context_info contains all required fields with valid values.
     
@@ -418,9 +568,9 @@ def validate_context_info(context_info):
     target_shape = context_info['target_shape']
     if not isinstance(target_shape, tuple) or len(target_shape) != 2:
         return False, "target_shape must be a tuple of (width, height)"
-    valid_shapes = [(1024, 1024), (1536, 1024), (1024, 1536)]
-    if target_shape not in valid_shapes:
-        return False, f"target_shape must be one of {valid_shapes}"
+    ok, reason = is_shape_allowed(target_shape[0], target_shape[1], size_policy)
+    if not ok:
+        return False, f"target_shape {target_shape} is invalid: {reason}"
     
     return True, ""
 

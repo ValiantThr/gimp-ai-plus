@@ -103,6 +103,12 @@ Quality (`low`, `medium`, `high`, `auto`) is set in the same place. Higher
 quality costs more and takes longer; `low` is a good setting for trying out
 prompts before committing.
 
+**Max resolution** is also there. GPT-Image-2 and newer accept almost any
+output size, so the plugin sizes each request to match the area you are
+working on instead of squeezing it into a fixed 1024 or 1536 shape — which
+means noticeably sharper inpainting. Cap it at 1024, 1536 or 2048 if you would
+rather spend less per image. Older models are fixed-size and ignore this.
+
 ## 🎨 Usage
 
 ### AI Inpainting

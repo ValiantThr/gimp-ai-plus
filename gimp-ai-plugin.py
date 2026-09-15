@@ -27,7 +27,7 @@ from coordinate_utils import (
     calculate_mask_coordinates,
     calculate_placement_coordinates,
     validate_context_info,
-    get_optimal_openai_shape,
+    choose_target_shape,
     calculate_padding_for_shape,
     extract_context_with_selection,
     calculate_result_placement,
@@ -340,6 +340,39 @@ class GimpAIPlugin(Gimp.PlugIn):
         """The configured quality, falling back to the default."""
         configured = self.config.get("quality")
         return configured if configured in QUALITIES else DEFAULT_QUALITY
+
+    def _get_size_policy(self):
+        """Sizing rules for the configured model, plus the user's own ceiling.
+
+        The 1.x models take three fixed shapes; the 2.x models take any size
+        with edges divisible by 16 inside a pixel budget. Returning None for
+        the former keeps the legacy path exactly as it was.
+        """
+        spec = get_model(self._get_model_id())
+        if not spec.custom_sizes:
+            return None
+
+        policy = {
+            "custom_sizes": True,
+            "max_edge": spec.max_edge,
+            "min_pixels": spec.min_pixels,
+            "max_pixels": spec.max_pixels,
+            "max_aspect": spec.max_aspect,
+            "budget_pixels": None,
+        }
+
+        # A user ceiling trades cost and latency against resolution. Stored as
+        # a longest-edge value because that is what people think in.
+        max_edge_setting = self.config.get("max_resolution")
+        if max_edge_setting:
+            try:
+                limit = int(max_edge_setting)
+            except (TypeError, ValueError):
+                limit = 0
+            if limit > 0:
+                policy["max_edge"] = min(policy["max_edge"] or limit, limit)
+                policy["budget_pixels"] = limit * limit
+        return policy
 
     def _get_processing_mode(self, dialog_mode=None):
         """Determine processing mode based on dialog selection or fallback to config"""
@@ -1216,9 +1249,32 @@ class GimpAIPlugin(Gimp.PlugIn):
             quality_row.pack_start(quality_combo, False, False, 0)
             model_box.pack_start(quality_row, False, False, 0)
 
+            # Maximum resolution. Only meaningful for models that take custom
+            # sizes; the 1.x line is locked to three fixed shapes regardless.
+            res_row = Gtk.HBox(spacing=10)
+            res_row.pack_start(Gtk.Label(label="Max resolution:"), False, False, 0)
+            res_combo = Gtk.ComboBoxText()
+            res_options = [
+                (0, "Match the image (up to 3840px)"),
+                (2048, "2048px"),
+                (1536, "1536px"),
+                (1024, "1024px (cheapest)"),
+            ]
+            current_res = self.config.get("max_resolution", 0) or 0
+            for index, (value, text) in enumerate(res_options):
+                res_combo.append_text(text)
+                if value == current_res:
+                    res_combo.set_active(index)
+            if res_combo.get_active() < 0:
+                res_combo.set_active(0)
+            res_row.pack_start(res_combo, False, False, 0)
+            model_box.pack_start(res_row, False, False, 0)
+
             quality_info = Gtk.Label()
             quality_info.set_text(
-                "Higher quality costs more per image and takes longer."
+                "Higher quality and resolution cost more per image and take "
+                "longer. Resolution applies to GPT-Image-2 and newer; older "
+                "models are fixed at 1024/1536."
             )
             quality_info.set_halign(Gtk.Align.START)
             quality_info.get_style_context().add_class("dim-label")
@@ -1278,6 +1334,11 @@ class GimpAIPlugin(Gimp.PlugIn):
                 if 0 <= quality_index < len(QUALITIES):
                     self.config["quality"] = QUALITIES[quality_index]
                     print(f"DEBUG: Quality set to {QUALITIES[quality_index]}")
+
+                res_index = res_combo.get_active()
+                if 0 <= res_index < len(res_options):
+                    self.config["max_resolution"] = res_options[res_index][0]
+                    print(f"DEBUG: Max resolution set to {res_options[res_index][0]}")
 
                 # Save debug mode setting
                 debug_mode = debug_checkbox.get_active()
@@ -1493,7 +1554,9 @@ class GimpAIPlugin(Gimp.PlugIn):
             )
 
             # For full image mode, select optimal OpenAI shape
-            target_shape = get_optimal_openai_shape(orig_width, orig_height)
+            target_shape = choose_target_shape(
+                orig_width, orig_height, self._get_size_policy()
+            )
             target_width, target_height = target_shape
             target_size = max(target_width, target_height)  # For backward compatibility
 
@@ -1574,6 +1637,7 @@ class GimpAIPlugin(Gimp.PlugIn):
                     0,
                     mode="focused",
                     has_selection=False,
+                    size_policy=self._get_size_policy(),
                 )
 
             # Extract selection bounds
@@ -1598,6 +1662,7 @@ class GimpAIPlugin(Gimp.PlugIn):
                 sel_y2,
                 mode="focused",
                 has_selection=True,
+                size_policy=self._get_size_policy(),
             )
 
             # Log the optimal shape selected
@@ -1608,7 +1673,9 @@ class GimpAIPlugin(Gimp.PlugIn):
             context_info["target_size"] = max(target_w, target_h)
 
             # Validate still works but now with shape support
-            is_valid, error_msg = validate_context_info(context_info)
+            is_valid, error_msg = validate_context_info(
+                context_info, self._get_size_policy()
+            )
             if not is_valid:
                 print(f"DEBUG: Context validation failed: {error_msg}")
                 # Fallback to center extraction
@@ -1621,6 +1688,7 @@ class GimpAIPlugin(Gimp.PlugIn):
                     0,
                     mode="focused",
                     has_selection=False,
+                    size_policy=self._get_size_policy(),
                 )
 
             # Add debug output for the calculated values
@@ -1647,140 +1715,6 @@ class GimpAIPlugin(Gimp.PlugIn):
             return extract_context_with_selection(
                 img_width, img_height, 0, 0, 0, 0, mode="focused", has_selection=False
             )
-
-    def _prepare_full_image(self, image):
-        """Prepare full image for GPT-Image-1 processing with optimal shape"""
-        try:
-            print("DEBUG: Preparing full image for transformation with optimal shape")
-
-            width = image.get_width()
-            height = image.get_height()
-
-            print(f"DEBUG: Original image size: {width}x{height}")
-
-            # Get optimal OpenAI shape for this image
-            target_shape = get_optimal_openai_shape(width, height)
-            target_width, target_height = target_shape
-
-            print(
-                f"DEBUG: Optimal OpenAI shape selected: {target_width}x{target_height}"
-            )
-
-            # Calculate padding info for this shape
-            padding_info = calculate_padding_for_shape(
-                width, height, target_width, target_height
-            )
-            scale = padding_info["scale_factor"]
-            scaled_width, scaled_height = padding_info["scaled_size"]
-
-            print(f"DEBUG: Scale factor: {scale:.3f}")
-            print(f"DEBUG: Scaled size: {scaled_width}x{scaled_height}")
-
-            # Create context_info with both old and new format for compatibility
-            context_info = {
-                "mode": "full_image",
-                "original_size": (width, height),
-                "scaled_size": (scaled_width, scaled_height),
-                "scale_factor": scale,
-                "target_shape": target_shape,  # New: optimal shape tuple
-                "target_size": (
-                    target_width
-                    if target_width == target_height
-                    else max(target_width, target_height)
-                ),  # Old format fallback
-                "padding_info": padding_info,
-                "has_selection": True,  # Always true for this mode
-            }
-
-            return context_info
-
-        except Exception as e:
-            print(f"DEBUG: Full image preparation failed: {e}")
-            # Fallback to square
-            return {
-                "mode": "full_image",
-                "original_size": (1024, 1024),
-                "scaled_size": (1024, 1024),
-                "scale_factor": 1.0,
-                "target_shape": (1024, 1024),
-                "target_size": 1024,
-                "has_selection": True,
-            }
-
-    def _extract_full_image(self, image, context_info):
-        """Extract and scale the full image for GPT-Image-1"""
-        try:
-            target_width, target_height = context_info["scaled_size"]
-            print(
-                f"DEBUG: Extracting full image, scaling to {target_width}x{target_height}"
-            )
-
-            # Create a copy of the image
-            original_width = image.get_width()
-            original_height = image.get_height()
-
-            # Create image copy for processing
-            temp_image = image.duplicate()
-
-            # Flatten the image to get composite result
-            if len(temp_image.get_layers()) > 1:
-                temp_image.flatten()
-
-            # Get the flattened layer
-            layer = temp_image.get_layers()[0]
-
-            # Scale the layer to target size
-            layer.scale(target_width, target_height, False)
-
-            # Scale the image canvas to match
-            temp_image.scale(target_width, target_height)
-
-            # Export to PNG in memory
-            print("DEBUG: Exporting full image as PNG...")
-            import tempfile
-
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
-                temp_path = temp_file.name
-
-            # Use GIMP's export function like the existing code
-            file = Gio.File.new_for_path(temp_path)
-            pdb_proc = Gimp.get_pdb().lookup_procedure("file-png-export")
-            pdb_config = pdb_proc.create_config()
-            pdb_config.set_property("run-mode", Gimp.RunMode.NONINTERACTIVE)
-            pdb_config.set_property("image", temp_image)
-            pdb_config.set_property("file", file)
-            pdb_config.set_property("options", None)
-            result = pdb_proc.run(pdb_config)
-
-            if result.index(0) != Gimp.PDBStatusType.SUCCESS:
-                temp_image.delete()
-                raise Exception("Failed to export full image")
-
-            # Read the exported PNG
-            with open(temp_path, "rb") as f:
-                image_bytes = f.read()
-
-            # Clean up
-            os.unlink(temp_path)
-            temp_image.delete()
-
-            # Convert to base64 for API
-            import base64
-
-            image_data = base64.b64encode(image_bytes).decode("utf-8")
-
-            print(
-                f"DEBUG: Full image extracted: {len(image_bytes)} bytes, base64 length: {len(image_data)}"
-            )
-            return (
-                True,
-                f"Extracted full image: {len(image_bytes)} bytes as PNG, base64 length: {len(image_data)}",
-                image_data,
-            )
-
-        except Exception as e:
-            print(f"DEBUG: Full image extraction failed: {e}")
-            return False, f"Full image extraction failed: {str(e)}", None
 
     def _run_threaded_operation(self, operation_func, operation_name, progress_label=None, max_wait_time=300):
         """Generic threaded wrapper for any operation to keep UI responsive"""
@@ -1932,9 +1866,6 @@ class GimpAIPlugin(Gimp.PlugIn):
 
             layer_data_list = []
 
-            # Import coordinate utilities for optimal sizing
-            from coordinate_utils import get_optimal_openai_shape
-
             # Process primary layer (bottom/first) with full optimization
             primary_layer = selected_layers[0]
             print(f"DEBUG: Processing primary layer: {primary_layer.get_name()}")
@@ -1958,7 +1889,9 @@ class GimpAIPlugin(Gimp.PlugIn):
             # Get optimal shape for primary image (using existing logic)
             primary_width = primary_temp_image.get_width()
             primary_height = primary_temp_image.get_height()
-            optimal_shape = get_optimal_openai_shape(primary_width, primary_height)
+            optimal_shape = choose_target_shape(
+                primary_width, primary_height, self._get_size_policy()
+            )
             target_width, target_height = optimal_shape
 
             print(
@@ -2292,290 +2225,14 @@ class GimpAIPlugin(Gimp.PlugIn):
                     image, selection_channel, context_info
                 )
 
-            # Step 2: Create target-shaped mask image (RGBA for transparency)
-            mask_image = Gimp.Image.new(
-                target_width, target_height, Gimp.ImageBaseType.RGB
-            )
-            if not mask_image:
-                image.remove_channel(selection_channel)
-                raise Exception("Failed to create mask image")
-
-            mask_layer = Gimp.Layer.new(
-                mask_image,
-                "selection_mask",
-                target_width,
-                target_height,
-                Gimp.ImageType.RGBA_IMAGE,
-                100.0,
-                Gimp.LayerMode.NORMAL,
-            )
-            if not mask_layer:
-                mask_image.delete()
-                image.remove_channel(selection_channel)
-                raise Exception("Failed to create mask layer")
-
-            mask_image.insert_layer(mask_layer, None, 0)
-
-            # Fill with black background (preserve all areas initially)
-            from gi.repository import Gegl
-
-            black_color = Gegl.Color.new("black")
-            Gimp.context_set_foreground(black_color)
-            mask_layer.edit_fill(Gimp.FillType.FOREGROUND)
-            print("DEBUG: Created black background mask (preserve all areas)")
-
-            # Force layer update to make sure black fill is committed
-            mask_layer.update(0, 0, target_width, target_height)
-
-            # Explicitly ensure extension areas stay black by filling the entire target area
-            print(
-                f"DEBUG: Ensuring all extension areas are black in {target_width}x{target_height} mask"
-            )
-
-            # Step 3: Copy only the original image area, leave extended context white
-
-            # Calculate where original image appears in context square
-            orig_width, orig_height = image.get_width(), image.get_height()
-            img_offset_x = max(
-                0, -ctx_x1
-            )  # where original image starts in context square
-            img_offset_y = max(
-                0, -ctx_y1
-            )  # where original image starts in context square
-            # Calculate where the original image content appears in the final padded target shape
-            # Account for both extract region and padding
-            if "padding_info" in context_info:
-                padding_info = context_info["padding_info"]
-                scale_factor = padding_info["scale_factor"]
-                pad_left, pad_top, pad_right, pad_bottom = padding_info["padding"]
-
-                # Original content is scaled and then padded
-                img_end_x = min(
-                    target_width - pad_left - pad_right, int(orig_width * scale_factor)
-                )
-                img_end_y = min(
-                    target_height - pad_top - pad_bottom,
-                    int(orig_height * scale_factor),
-                )
-
-                print(
-                    f"DEBUG: Accounting for padding in mask - scale={scale_factor}, padding=({pad_left},{pad_top},{pad_right},{pad_bottom})"
-                )
-            else:
-                # Fallback to simple calculation
-                img_end_x = min(
-                    ctx_width, orig_width - ctx_x1 if ctx_x1 >= 0 else orig_width
-                )
-                img_end_y = min(
-                    ctx_height, orig_height - ctx_y1 if ctx_y1 >= 0 else orig_height
-                )
-
-            print(
-                f"DEBUG: Original image appears at ({img_offset_x},{img_offset_y}) to ({img_end_x},{img_end_y}) in context square"
-            )
-
-            # Only process if there's an intersection
-            if img_end_x > img_offset_x and img_end_y > img_offset_y:
-                # Get buffers for pixel-level operations
-                selection_buffer = selection_channel.get_buffer()
-                if not selection_buffer:
-                    mask_image.delete()
-                    image.remove_channel(selection_channel)
-                    raise Exception("Failed to get selection channel buffer")
-
-                mask_shadow_buffer = mask_layer.get_shadow_buffer()
-                if not mask_shadow_buffer:
-                    mask_image.delete()
-                    image.remove_channel(selection_channel)
-                    raise Exception("Failed to get mask shadow buffer")
-
-                print("DEBUG: Starting Gegl pixel copying from selection channel")
-
-                # Create Gegl processing graph for selection shape copying
-                graph = Gegl.Node()
-
-                # Source 1: Current mask buffer (black background)
-                mask_source = graph.create_child("gegl:buffer-source")
-                mask_source.set_property("buffer", mask_layer.get_buffer())
-
-                # Source 2: Selection channel buffer (contains exact selection shape)
-                selection_source = graph.create_child("gegl:buffer-source")
-                selection_source.set_property("buffer", selection_buffer)
-
-                # Scale selection if needed to match the final image scaling
-                if "padding_info" in context_info:
-                    padding_info = context_info["padding_info"]
-                    scale_factor = padding_info["scale_factor"]
-
-                    if abs(scale_factor - 1.0) > 0.001:  # Need scaling
-                        print(
-                            f"DEBUG: Scaling selection channel by factor {scale_factor}"
-                        )
-                        scale_op = graph.create_child("gegl:scale-ratio")
-                        scale_op.set_property("x", float(scale_factor))
-                        scale_op.set_property("y", float(scale_factor))
-                        selection_source.link(scale_op)
-                        selection_input = scale_op
-                    else:
-                        selection_input = selection_source
-                else:
-                    selection_input = selection_source
-
-                # Translate selection to correct position in padded target shape
-                # For full image with padding, the selection has been scaled and needs padding offset
-                if "padding_info" in context_info:
-                    padding_info = context_info["padding_info"]
-                    pad_left, pad_top, pad_right, pad_bottom = padding_info["padding"]
-
-                    # Selection has already been scaled, just add padding offset
-                    translate_x = pad_left
-                    translate_y = pad_top
-
-                    print(
-                        f"DEBUG: Mask translation for padded image: translate by ({translate_x},{translate_y})"
-                    )
-                else:
-                    # Original logic for non-padded extracts
-                    translate_x = -ctx_x1
-                    translate_y = -ctx_y1
-
-                translate = graph.create_child("gegl:translate")
-                translate.set_property("x", float(translate_x))
-                translate.set_property("y", float(translate_y))
-
-                # Connect scaled selection through translate to composite
-                selection_input.link(translate)
-
-                # Composite the translated selection over the black background
-                # This preserves the black background in extension areas
-                composite = graph.create_child("gegl:over")
-
-                # Write to mask shadow buffer
-                output = graph.create_child("gegl:write-buffer")
-                output.set_property("buffer", mask_shadow_buffer)
-
-                # Link the processing chain:
-                # mask_source (black bg) + translated_selection → composite → output
-                selection_source.link(translate)
-                mask_source.link(composite)
-                translate.connect_to("output", composite, "aux")
-                composite.link(output)
-
-                print(
-                    f"DEBUG: Compositing selection over black background: translate by ({translate_x},{translate_y})"
-                )
-
-                # Process the graph to composite selection shape over black background
-                output.process()
-                print(
-                    "DEBUG: Successfully composited selection shape over black background preserving extension areas"
-                )
-
-                # Flush and merge shadow buffer to make changes visible
-                mask_shadow_buffer.flush()
-                mask_layer.merge_shadow(True)
-                print("DEBUG: Merged shadow buffer with base layer")
-            else:
-                print("DEBUG: No intersection - mask remains fully white")
-
-            # Force complete layer update
-            mask_layer.update(0, 0, target_width, target_height)
-
-            # Force flush all changes to ensure PNG export sees the correct data
-            Gimp.displays_flush()
-
-            print("DEBUG: Successfully copied exact selection shape to mask using Gegl")
-
-            # Step 4: Mask is already at target shape, no scaling needed
-            # (Previous version scaled square masks, but we now create masks at target shape)
-            print(f"DEBUG: Mask created at target shape {target_width}x{target_height}")
-
-            # Step 4.5: Make selection areas transparent (the one simple change requested)
-            # Current state: black background, white selection copied from channel
-            # Needed: black background (preserve), transparent selection (inpaint)
-            print("DEBUG: Making selection areas transparent for inpainting")
-            scaled_mask_layer = mask_image.get_layers()[0]
-
-            # Create a simple color-to-alpha operation to make selection areas transparent
-            from gi.repository import Gegl
-
-            transparency_graph = Gegl.Node()
-
-            # Get layer buffer
-            layer_buffer = scaled_mask_layer.get_buffer()
-            shadow_buffer = scaled_mask_layer.get_shadow_buffer()
-
-            # Source buffer
-            buffer_source = transparency_graph.create_child("gegl:buffer-source")
-            buffer_source.set_property("buffer", layer_buffer)
-
-            # Convert white (selection) to transparent, keep everything else as-is
-            color_to_alpha = transparency_graph.create_child("gegl:color-to-alpha")
-            white_color = Gegl.Color.new("white")
-            color_to_alpha.set_property("color", white_color)
-
-            # Output buffer
-            buffer_write = transparency_graph.create_child("gegl:write-buffer")
-            buffer_write.set_property("buffer", shadow_buffer)
-
-            # Process: source → color-to-alpha → output
-            buffer_source.link(color_to_alpha)
-            color_to_alpha.link(buffer_write)
-            buffer_write.process()
-
-            # Merge changes
-            shadow_buffer.flush()
-            scaled_mask_layer.merge_shadow(True)
-            scaled_mask_layer.update(0, 0, target_size, target_size)
-
-            print(
-                "DEBUG: Selection areas are now transparent (inpaint), context/extension areas are black (preserved)"
-            )
-
-            # Step 5: Export as PNG for OpenAI
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
-                temp_filename = temp_file.name
-
-            try:
-                file = Gio.File.new_for_path(temp_filename)
-
-                pdb_proc = Gimp.get_pdb().lookup_procedure("file-png-export")
-                pdb_config = pdb_proc.create_config()
-                pdb_config.set_property("run-mode", Gimp.RunMode.NONINTERACTIVE)
-                pdb_config.set_property("image", mask_image)
-                pdb_config.set_property("file", file)
-                pdb_config.set_property("options", None)
-
-                result = pdb_proc.run(pdb_config)
-                if result.index(0) != Gimp.PDBStatusType.SUCCESS:
-                    mask_image.delete()
-                    image.remove_channel(selection_channel)
-                    raise Exception(f"PNG export failed with status: {result.index(0)}")
-
-                # Read the exported mask PNG
-                with open(temp_filename, "rb") as f:
-                    png_data = f.read()
-
-                if len(png_data) == 0:
-                    raise Exception("Exported PNG file is empty")
-
-                # Clean up
-                os.unlink(temp_filename)
-                mask_image.delete()
-                image.remove_channel(selection_channel)
-
-                print(
-                    f"DEBUG: Created pixel-perfect selection mask PNG: {len(png_data)} bytes"
-                )
-                return png_data
-
-            except Exception as e:
-                print(f"DEBUG: Mask export failed: {e}")
-                if os.path.exists(temp_filename):
-                    os.unlink(temp_filename)
-                mask_image.delete()
-                image.remove_channel(selection_channel)
-                raise Exception(f"Mask export failed: {str(e)}")
+            # Everything below the delegation above was unreachable: every
+            # producer of context_info sets "padding_info", so that branch
+            # always fires. It was the original, correct implementation -
+            # the one that did translate the selection into extract-region
+            # coordinates - superseded by a "simplified" version that
+            # dropped the translation and broke focused inpainting. Keeping
+            # a second, divergent mask implementation around invited exactly
+            # that kind of mistake, so it is gone.
 
         except Exception as e:
             print(f"DEBUG: Context mask creation failed: {e}")

@@ -23,12 +23,16 @@ def main():
     try:
         from test_coordinate_transformations import run_all_tests
         from test_openai_client import run_all_tests as run_client_tests
+        from test_size_policy import run_all_tests as run_size_tests
 
         print("Running coordinate transformation tests...")
         success = run_all_tests()
 
         print("\nRunning OpenAI client tests...")
         success = run_client_tests() and success
+
+        print("\nRunning size policy tests...")
+        success = run_size_tests() and success
 
         if success:
             print("\nAll tests completed successfully!")

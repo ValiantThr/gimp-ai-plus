@@ -144,6 +144,96 @@ def transparent_bounds(png_bytes):
             pass
 
 
+def transparent_fraction(png_bytes, sample=192):
+    """What fraction of the mask is transparent, by area rather than extent.
+
+    A bounding box is a poor measure here: custom sizing can leave a 1px
+    padding column, and a box spanning it reads as 100% of the canvas however
+    small the actual hole is. This scales the mask down in GIMP and counts
+    pixels, which is both accurate and quick - decoding a full-size PNG in
+    pure Python takes tens of seconds.
+    """
+    import zlib
+
+    fd, path = tempfile.mkstemp(suffix=".png")
+    os.close(fd)
+    small_fd, small_path = tempfile.mkstemp(suffix=".png")
+    os.close(small_fd)
+    try:
+        with open(path, "wb") as handle:
+            handle.write(png_bytes)
+        loaded = Gimp.file_load(Gimp.RunMode.NONINTERACTIVE, Gio.File.new_for_path(path))
+        loaded.scale(sample, sample)
+        Gimp.file_save(
+            Gimp.RunMode.NONINTERACTIVE, loaded,
+            Gio.File.new_for_path(small_path), None,
+        )
+        loaded.delete()
+
+        data = open(small_path, "rb").read()
+        # Minimal PNG reader: header for geometry, IDAT for pixels.
+        import struct
+
+        pos, idat, hdr = 8, bytearray(), None
+        while pos < len(data):
+            (length,) = struct.unpack(">I", data[pos:pos + 4])
+            ctype = data[pos + 4:pos + 8]
+            if ctype == b"IHDR":
+                w, h, depth, color = struct.unpack(">IIBB", data[pos + 8:pos + 18])
+                hdr = (w, h, color)
+            elif ctype == b"IDAT":
+                idat += data[pos + 8:pos + 8 + length]
+            elif ctype == b"IEND":
+                break
+            pos += 12 + length
+
+        w, h, color = hdr
+        channels = {0: 1, 2: 3, 4: 2, 6: 4}.get(color)
+        if channels is None or color not in (4, 6):
+            return 0.0  # no alpha channel at all means nothing is transparent
+
+        raw = zlib.decompress(bytes(idat))
+        stride = w * channels
+        prev = bytearray(stride)
+        transparent = 0
+        offset = 0
+        for _ in range(h):
+            filt = raw[offset]
+            offset += 1
+            line = bytearray(raw[offset:offset + stride])
+            offset += stride
+            if filt == 1:
+                for i in range(channels, stride):
+                    line[i] = (line[i] + line[i - channels]) & 0xFF
+            elif filt == 2:
+                for i in range(stride):
+                    line[i] = (line[i] + prev[i]) & 0xFF
+            elif filt == 3:
+                for i in range(stride):
+                    left = line[i - channels] if i >= channels else 0
+                    line[i] = (line[i] + ((left + prev[i]) >> 1)) & 0xFF
+            elif filt == 4:
+                for i in range(stride):
+                    a = line[i - channels] if i >= channels else 0
+                    b = prev[i]
+                    c = prev[i - channels] if i >= channels else 0
+                    p = a + b - c
+                    pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                    pr = a if (pa <= pb and pa <= pc) else (b if pb <= pc else c)
+                    line[i] = (line[i] + pr) & 0xFF
+            for x in range(w):
+                if line[x * channels + channels - 1] < 128:
+                    transparent += 1
+            prev = line
+        return transparent / float(w * h)
+    finally:
+        for temp in (path, small_path):
+            try:
+                os.unlink(temp)
+            except OSError:
+                pass
+
+
 def build_mask(plugin, image):
     """Run the plugin's real context-extraction and mask-creation path."""
     context_info = plugin._calculate_context_extraction(image)
@@ -245,22 +335,23 @@ def test_mask_not_mostly_transparent(plugin):
 
     context_info, mask = build_mask(plugin, image)
     x1, y1, x2, y2, size = transparent_bounds(mask)
+    fraction = transparent_fraction(mask)
     image.delete()
 
     if x1 is None:
         emit("FAIL", name, "mask is fully opaque - selection never reached it")
         return False
-
-    area = (x2 - x1) * (y2 - y1)
-    canvas = size[0] * size[1]
-    fraction = area / canvas
+    if fraction < 0.001:
+        emit("FAIL", name, "mask has no meaningful transparent area")
+        return False
     if fraction > 0.5:
-        emit("FAIL", name, f"transparent region covers {100*fraction:.1f}% of the mask")
+        emit("FAIL", name,
+             f"transparent region covers {100*fraction:.1f}% of the mask by area")
         return False
 
     emit("PASS", name,
-         f"transparent region is {100*fraction:.1f}% of the mask "
-         f"({x2-x1}x{y2-y1} of {size[0]}x{size[1]})")
+         f"transparent area is {100*fraction:.1f}% of the mask "
+         f"(bbox {x2-x1}x{y2-y1} of {size[0]}x{size[1]})")
     return True
 
 

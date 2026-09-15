@@ -154,7 +154,8 @@ Status is updated as phases land.
     unaffected, which is why only the default mode was broken. The correct
     implementation already existed in `_create_context_mask()` but is unreachable:
     it early-returns into the broken function whenever `padding_info` is present,
-    which every producer sets unconditionally. Phase 3 should collapse the two.
+    which every producer sets unconditionally. Phase 3 deleted the unreachable copy:
+    keeping a second, divergent mask implementation around is what invited the bug.
 11. ~~**Edits came back mostly transparent.**~~ **Fixed.** No `background`
     parameter was sent, so the API default of `auto` applied and the model
     returned RGBA that was only 44.9% fully opaque with 21.7% fully transparent -
@@ -189,8 +190,10 @@ Status is updated as phases land.
 - **Phase 2 — Model registry and picker.** *(complete)* Per-model capability entries in
   `openai_client.py`, model and quality dropdowns in Settings, default
   `gpt-image-2.5-flare`. Capabilities verified against the live API, not the docs.
-- **Phase 3 — Resolution pipeline.** Replace fixed shapes in `coordinate_utils.py` with
-  arbitrary multiple-of-16 sizing under the real API constraints; rewrite the affected tests.
+- **Phase 3 — Resolution pipeline.** *(complete)* `choose_target_shape()` sizes each request
+  from the region's own aspect ratio under the real API constraints, so content is no longer
+  letterboxed into one of three fixed shapes. A max-resolution setting trades cost against
+  detail. The legacy path is untouched for the 1.x models, which genuinely are fixed-size.
 - **Phase 4 — New capabilities.** `background: transparent`, `output_format`, `n > 1` with a
   variant picker, and `stream` + `partial_images` for live preview.
 - **Phase 5 — Polish.** Logging behind the existing `debug_mode` flag, per-call cost readout
@@ -214,6 +217,32 @@ Status is updated as phases land.
 "$LOCALAPPDATA/Programs/GIMP 3/bin/gimp-console-3.2.exe" \
     -i -d -f --batch-interpreter=plug-in-script-fu-eval -b "(gimp-quit 0)"
 ```
+
+### Output sizing
+
+Before Phase 3 every request was forced into `1024x1024`, `1536x1024` or
+`1024x1536`. A region that matched none of those was letterboxed and scaled
+down, which is why inpainted patches came back softer than their surroundings -
+a resolution loss that had nothing to do with the model.
+
+`choose_target_shape()` now sizes each request from the region itself:
+
+| Source region | Fixed shapes | Custom sizing |
+|---|---|---|
+| 1600x1200 | 1536x1024, 171px padding, 0.85x scale | **1600x1200, no padding, 1.0x** |
+| 2048x1536 | 1536x1024, downscaled | **2048x1536 unchanged** |
+| 8000x6000 | 1536x1024 | 3312x2496 (clamped to the pixel budget) |
+| 220x200 | 1024x1024 | 864x784 (grown to clear the minimum) |
+
+Rules enforced: both edges divisible by 16, longest edge 3840 or less, between
+655,360 and 8,294,400 pixels, aspect ratio 3:1 or tighter. The scale never
+enlarges a region that already fits, since upscaling costs money and invents
+detail - except where the API's minimum pixel budget forces it.
+
+**Max resolution** in Settings caps the longest edge (1024/1536/2048, or match
+the image). Lower is cheaper and faster. It applies only to GPT-Image-2 and
+newer; the 1.x models really are limited to the three fixed shapes, and their
+path is unchanged.
 
 ### Scripting the plugin
 
