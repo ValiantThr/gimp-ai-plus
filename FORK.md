@@ -42,6 +42,32 @@ Established on Windows 11 with GIMP 3.2.6 before changing any plugin code.
 | Unmodified plugin loads in GIMP 3.2.6 | **Pass** — all three procedures register |
 | GIMP 3.2 deprecated-API usage | **None** — no v3.2 compatibility work needed |
 | Python 3.14 stdlib compatibility | **Pass** — no removed modules in the import list |
+| TLS certificate verification | **Pass** — see below; the `CERT_NONE` fallback is unnecessary |
+| Live API reachability | **Pass** — both `gpt-image-1` and `gpt-image-2.5-flare` |
+
+### Smoke test, 2026-09-15
+
+`tools/smoke_test.py` under GIMP's bundled Python (3.14.7, OpenSSL 3.6.4):
+
+**TLS verification works.** GIMP 3.2.6 ships its own CA bundle at
+`%LOCALAPPDATA%\Programs\GIMP 3\etc\ssl\cert.pem`, and 174 certificates load into a default
+`SSLContext`. The handshake against `api.openai.com` succeeds with verification fully enabled.
+The plugin's `CERT_NONE` fallback is therefore dead weight on this platform, not a workaround
+for a real defect — Phase 1 removes it rather than papering over it with a vendored bundle.
+If a certificate error ever does occur it should fail loudly, not silently downgrade.
+
+**Measured, at `1024x1024` / `quality=low`:**
+
+| Model | Latency | PNG | Output tokens | Est. cost |
+|---|---|---|---|---|
+| `gpt-image-1` (upstream default) | 9.1s | 1086 KB | 272 | ~$0.0109 |
+| `gpt-image-2.5-flare` (fork default) | 6.9s | 648 KB | 196 | ~$0.0059 |
+
+The migration target is **46% cheaper and 24% faster** than what upstream hardcodes, before
+counting the quality and resolution gains. This is the whole case for the fork in one row.
+
+All image models are visible to the test account: `gpt-image-1`, `-1-mini`, `-1.5`,
+`gpt-image-2`, `gpt-image-2.5-flare`, `gpt-image-2.5-sunburst`, plus dated snapshots.
 
 Environment:
 
@@ -61,9 +87,9 @@ are present in upstream `v0.14.0`.
    stalled connection hangs the worker thread with no cancel path.
 2. **TLS verification silently disabled on fallback.** `_make_url_request()` at `:137` retries
    with `check_hostname = False` and `ssl.CERT_NONE` on any certificate error, sending the API
-   key over an unverified connection with only a debug print. GIMP's bundled Python on Windows
-   often lacks a usable CA bundle, so this may be the normal path rather than an edge case —
-   `tools/smoke_test.py` determines which.
+   key over an unverified connection with only a debug print. **Resolved by the smoke test
+   above:** GIMP 3.2.6 ships a working CA bundle, so verification succeeds and the fallback is
+   never legitimately needed. Phase 1 deletes it and fails loudly instead.
 3. **Duplicated generation logic.** `_call_openai_generation()` at `:1676` and the threaded
    copy at `:3950` have diverged in size defaults and error handling.
 4. **API error bodies mostly swallowed.** Only the edits path at `:3059` reads
@@ -85,7 +111,7 @@ are present in upstream `v0.14.0`.
 
 ## Roadmap
 
-- **Phase 0 — Baseline.** *(done)* Fork, verify upstream against GIMP 3.2.6, record findings,
+- **Phase 0 — Baseline.** *(complete)* Fork, verify upstream against GIMP 3.2.6, record findings,
   add `tools/smoke_test.py`.
 - **Phase 1 — Client extraction.** Split out an `openai_client` module with one request
   builder, one error handler, one timeout policy, one TLS policy. Fixes issues 1–4.
