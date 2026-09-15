@@ -587,6 +587,65 @@ def test_input_fidelity_only_where_supported():
     return True
 
 
+def test_verify_lists_image_models():
+    """verify() checks the key without generating anything."""
+    print("\n=== Testing verify() ===")
+
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps({"data": [
+                {"id": "gpt-image-2.5-flare"},
+                {"id": "gpt-image-1"},
+                {"id": "gpt-4o"},
+            ]}).encode()
+
+    def fake_urlopen(req, timeout=None, context=None):
+        captured["url"] = req.full_url
+        captured["method"] = req.get_method()
+        return FakeResponse()
+
+    original = openai_client.urllib.request.urlopen
+    openai_client.urllib.request.urlopen = fake_urlopen
+    try:
+        models = OpenAIImageClient("sk-test").verify()
+    finally:
+        openai_client.urllib.request.urlopen = original
+
+    assert captured["url"].endswith("/models"), captured["url"]
+    assert captured["method"] == "GET", captured["method"]
+    print("[ok] GETs the models endpoint - no image is generated, so it is free")
+
+    assert models == ["gpt-image-1", "gpt-image-2.5-flare"], models
+    print("[ok] returns only image models, sorted")
+
+    def rejecting_urlopen(req, timeout=None, context=None):
+        raise urllib.error.HTTPError(
+            captured["url"], 401, "Unauthorized", {},
+            io.BytesIO(json.dumps({"error": {"message": "Invalid key"}}).encode()),
+        )
+
+    openai_client.urllib.request.urlopen = rejecting_urlopen
+    try:
+        OpenAIImageClient("sk-bad").verify()
+    except OpenAIError as err:
+        assert err.status == 401
+        assert "API key" in err.user_message()
+        print("[ok] a rejected key raises with a message naming the fix")
+    else:
+        raise AssertionError("expected OpenAIError")
+    finally:
+        openai_client.urllib.request.urlopen = original
+    return True
+
+
 def run_all_tests():
     """Run every openai_client test, returning True if all passed."""
     print("Running openai_client Tests")
@@ -610,6 +669,7 @@ def run_all_tests():
         test_cost_estimation,
         test_configured_model_reaches_the_request,
         test_input_fidelity_only_where_supported,
+        test_verify_lists_image_models,
     ]
 
     failures = []

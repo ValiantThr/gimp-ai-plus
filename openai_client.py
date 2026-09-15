@@ -525,6 +525,46 @@ class OpenAIImageClient:
         self._log(f"edit: received {len(out)} image(s)")
         return ImageResult(out, usage=result.get("usage"), raw=result)
 
+    def verify(self, timeout=30):
+        """Check the key and the connection. Returns available image model ids.
+
+        Uses the models endpoint, which generates nothing and so costs
+        nothing. That makes it safe to offer as a button: it distinguishes a
+        rejected key from a blocked network from a working setup, which is
+        most of what a support conversation is trying to establish.
+        """
+        req = urllib.request.Request(
+            f"{self._base_url}/models", headers=self._auth_headers()
+        )
+        try:
+            with urllib.request.urlopen(
+                req, timeout=timeout, context=self._ssl_context()
+            ) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as err:
+            body = ""
+            try:
+                body = err.read().decode("utf-8", "replace")
+            except Exception:
+                pass
+            raise self._parse_error(body, err.code) from err
+        except ssl.SSLCertVerificationError as err:
+            raise OpenAIError(
+                f"TLS certificate verification failed: {err}"
+            ) from err
+        except urllib.error.URLError as err:
+            raise OpenAIError(f"Could not reach the API: {err.reason}") from err
+        except OSError as err:
+            raise OpenAIError(f"Could not reach the API: {err}") from err
+        except ValueError as err:
+            raise OpenAIError(f"Malformed response from the API: {err}") from err
+
+        return sorted(
+            entry["id"]
+            for entry in payload.get("data", [])
+            if str(entry.get("id", "")).startswith("gpt-image")
+        )
+
     def download(self, url, timeout=DOWNLOAD_TIMEOUT):
         """Fetch bytes from a result URL, under the same TLS and error policy."""
         self._log(f"download: {url}")

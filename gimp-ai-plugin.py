@@ -531,6 +531,42 @@ class GimpAIPlugin(Gimp.PlugIn):
             return f" ({model})" if model else ""
         return f" ({model}, ~${cost:.4f})" if model else f" (~${cost:.4f})"
 
+    def _test_http_request(self, api_key=None):
+        """Check the key and the connection. Returns (success, message).
+
+        Costs nothing - it lists models rather than generating an image. Pass
+        a key to test one the user has typed but not yet saved.
+        """
+        key = api_key or self._get_api_key()
+        if not key:
+            return False, (
+                "No API key configured. Paste one above, or set the "
+                "OPENAI_API_KEY environment variable."
+            )
+
+        try:
+            client = OpenAIImageClient(key, log=lambda m: print(f"DEBUG: [api] {m}"))
+            models = client.verify()
+        except OpenAIError as err:
+            return False, err.user_message()
+        except Exception as err:
+            return False, f"Connection test failed: {err}"
+
+        chosen = self._get_model_id()
+        if models and chosen not in models:
+            return True, (
+                f"Key accepted, but {chosen} is not available to this "
+                f"account. Pick another model above."
+            )
+        if not models:
+            # The listing endpoint does not always enumerate image models;
+            # a working key is still the thing being tested here.
+            return True, "Key accepted and the API is reachable."
+        return True, (
+            f"Key accepted. {len(models)} image models available, "
+            f"including {chosen}."
+        )
+
     def _get_processing_mode(self, dialog_mode=None):
         """Determine processing mode based on dialog selection or fallback to config"""
         if dialog_mode:
@@ -1331,6 +1367,27 @@ class GimpAIPlugin(Gimp.PlugIn):
 
             api_frame.add(api_box)
             content_area.pack_start(api_frame, False, False, 0)
+
+            # Testing the key from here is the obvious next action after
+            # typing one, and much easier to find than a menu entry.
+            test_row = Gtk.HBox(spacing=10)
+            test_button = Gtk.Button(label="Test Connection")
+            test_row.pack_start(test_button, False, False, 0)
+            test_status = Gtk.Label()
+            test_status.set_halign(Gtk.Align.START)
+            test_status.set_line_wrap(True)
+            test_row.pack_start(test_status, False, False, 0)
+            api_box.pack_start(test_row, False, False, 0)
+
+            def on_test_clicked(_button):
+                typed = key_entry.get_text().strip()
+                test_status.set_text("Testing...")
+                while Gtk.events_pending():
+                    Gtk.main_iteration()
+                ok, message = self._test_http_request(typed or None)
+                test_status.set_text(("OK - " if ok else "Failed - ") + message)
+
+            test_button.connect("clicked", on_test_clicked)
 
             # Prompt History section
             history_frame = Gtk.Frame(label="Prompt History")
