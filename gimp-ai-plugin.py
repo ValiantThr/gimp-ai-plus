@@ -5,7 +5,7 @@
 GIMP AI Plugin - Simplified version to fix crash
 """
 
-VERSION = "0.14.0"
+VERSION = "1.0.0"
 
 import sys
 import os
@@ -13,6 +13,7 @@ import gi
 import json
 import base64
 import tempfile
+import time
 
 gi.require_version("Gimp", "3.0")
 gi.require_version("GimpUi", "3.0")
@@ -49,13 +50,104 @@ from openai_client import (
 )
 
 
+class _TeeWriter:
+    """Write to a stream and a log file, tolerating either being absent.
+
+    Under pythonw.exe sys.stdout is None, so `original` is frequently None and
+    the log file is the only destination. Every method swallows errors: a
+    broken log must never take the plugin down with it.
+    """
+
+    def __init__(self, original, log_file):
+        self._original = original
+        self._log = log_file
+
+    def write(self, text):
+        if self._original is not None:
+            try:
+                self._original.write(text)
+            except Exception:
+                pass
+        try:
+            self._log.write(text)
+            self._log.flush()
+        except Exception:
+            pass
+        return len(text)
+
+    def flush(self):
+        for target in (self._original, self._log):
+            if target is None:
+                continue
+            try:
+                target.flush()
+            except Exception:
+                pass
+
+    def isatty(self):
+        return False
+
+
 class GimpAIPlugin(Gimp.PlugIn):
     """Simplified AI Plugin"""
 
     def __init__(self):
         super().__init__()
+        self._start_logging()
         self.config = self._load_config()
         self._cancel_requested = False
+
+    def do_set_i18n(self, procname):
+        """Disable localisation explicitly.
+
+        The plugin ships no translations. Without this GIMP 3.2 prints three
+        lines per procedure per run complaining about a missing locale
+        catalogue - nine lines that look like errors and are not.
+        """
+        return False
+
+    LOG_NAME = "gimp-ai-plus.log"
+    LOG_MAX_BYTES = 2 * 1024 * 1024
+
+    def _start_logging(self):
+        """Send print() output to a log file as well as wherever it went.
+
+        On Windows GIMP runs .py plug-ins under pythonw.exe, which has no
+        console: sys.stdout is None and every print() in this file is silently
+        discarded. That makes a user's "it didn't work" unanswerable, because
+        there is nothing to ask them for. Redirecting here means all the
+        existing debug output lands somewhere a user can find and attach to a
+        bug report, without editing hundreds of call sites.
+
+        Wrapped in a bare except on purpose: logging must never be the reason
+        the plugin fails to load.
+        """
+        try:
+            log_dir = os.path.join(Gimp.directory(), "gimp-ai-plugin")
+            os.makedirs(log_dir, exist_ok=True)
+            path = os.path.join(log_dir, self.LOG_NAME)
+
+            # Append across runs so a failure and the steps before it stay
+            # together, but never let it grow without bound.
+            if os.path.exists(path) and os.path.getsize(path) > self.LOG_MAX_BYTES:
+                os.unlink(path)
+
+            handle = open(path, "a", encoding="utf-8", errors="replace")
+            handle.write(
+                f"\n===== gimp-ai-plus {VERSION} "
+                f"{time.strftime('%Y-%m-%d %H:%M:%S')} =====\n"
+            )
+            handle.flush()
+
+            sys.stdout = _TeeWriter(sys.stdout, handle)
+            sys.stderr = _TeeWriter(sys.stderr, handle)
+            self._log_path = path
+        except Exception:
+            self._log_path = None
+
+    def get_log_path(self):
+        """Where the log is, for the settings dialog to show the user."""
+        return getattr(self, "_log_path", None)
 
     def _load_config(self):
         """Load configuration from various locations"""
@@ -425,6 +517,19 @@ class GimpAIPlugin(Gimp.PlugIn):
 
         margin = int(shorter * percent / 100.0)
         return max(4, min(margin, 256))
+
+    def _cost_suffix(self):
+        """" (Model, ~$0.0123)" for the completion message, or "".
+
+        People are spending real money per click. Showing it costs nothing and
+        removes the need to go and read a billing dashboard to find out what a
+        session cost.
+        """
+        cost = getattr(self, "_last_cost", None)
+        model = getattr(self, "_last_model", None)
+        if cost is None:
+            return f" ({model})" if model else ""
+        return f" ({model}, ~${cost:.4f})" if model else f" (~${cost:.4f})"
 
     def _get_processing_mode(self, dialog_mode=None):
         """Determine processing mode based on dialog selection or fallback to config"""
@@ -1388,6 +1493,26 @@ class GimpAIPlugin(Gimp.PlugIn):
             debug_info.get_style_context().add_class("dim-label")
             debug_box.pack_start(debug_info, False, False, 0)
 
+            log_path = self.get_log_path()
+            if log_path:
+                log_label = Gtk.Label()
+                log_label.set_text(f"Log file: {log_path}")
+                log_label.set_halign(Gtk.Align.START)
+                log_label.set_line_wrap(True)
+                log_label.set_selectable(True)
+                log_label.get_style_context().add_class("dim-label")
+                debug_box.pack_start(log_label, False, False, 0)
+
+                log_hint = Gtk.Label()
+                log_hint.set_text(
+                    "Attach this file when reporting a problem - on Windows it "
+                    "is the only record of what the plugin did."
+                )
+                log_hint.set_halign(Gtk.Align.START)
+                log_hint.set_line_wrap(True)
+                log_hint.get_style_context().add_class("dim-label")
+                debug_box.pack_start(log_hint, False, False, 0)
+
             debug_frame.add(debug_box)
             content_area.pack_start(debug_frame, False, False, 0)
 
@@ -1929,6 +2054,8 @@ class GimpAIPlugin(Gimp.PlugIn):
             return
         spec = get_model(model_id or self._get_model_id())
         cost = spec.cost_for(result.usage)
+        self._last_cost = cost
+        self._last_model = spec.label
         if cost is not None:
             print(f"DEBUG: [api] {spec.model_id} usage {result.usage} (~${cost:.4f})")
         else:
@@ -3319,6 +3446,8 @@ class GimpAIPlugin(Gimp.PlugIn):
             "gimp-ai-inpaint",
             "gimp-ai-layer-generator",
             "gimp-ai-layer-composite",
+            "gimp-ai-settings",
+            "gimp-ai-test-connection",
         ]
 
     def do_create_procedure(self, name):
@@ -3349,6 +3478,22 @@ class GimpAIPlugin(Gimp.PlugIn):
             procedure.add_menu_path("<Image>/Filters/AI/")
             self._add_prompt_argument(procedure)
             self._add_use_mask_argument(procedure)
+            return procedure
+
+        elif name == "gimp-ai-settings":
+            procedure = Gimp.ImageProcedure.new(
+                self, name, Gimp.PDBProcType.PLUGIN, self.run_settings, None
+            )
+            procedure.set_menu_label("Settings")
+            procedure.add_menu_path("<Image>/Filters/AI/")
+            return procedure
+
+        elif name == "gimp-ai-test-connection":
+            procedure = Gimp.ImageProcedure.new(
+                self, name, Gimp.PDBProcType.PLUGIN, self.run_test_connection, None
+            )
+            procedure.set_menu_label("Test Connection")
+            procedure.add_menu_path("<Image>/Filters/AI/")
             return procedure
 
         return None
@@ -3414,7 +3559,10 @@ class GimpAIPlugin(Gimp.PlugIn):
             if not api_key:
                 self._update_progress(progress_label, "❌ No OpenAI API key found!")
                 Gimp.message(
-                    "❌ No OpenAI API key found!\n\nPlease set your API key in:\n- config.json file\n- OPENAI_API_KEY environment variable"
+                    "No OpenAI API key configured.\n\n"
+                    "Go to Filters > AI > Settings and paste your key.\n\n"
+                    "Get one at https://platform.openai.com/api-keys - or set "
+                    "the OPENAI_API_KEY environment variable instead."
                 )
                 return procedure.new_return_values(
                     Gimp.PDBStatusType.CANCEL, GLib.Error()
@@ -3516,7 +3664,9 @@ class GimpAIPlugin(Gimp.PlugIn):
                 )
 
                 if import_success:
-                    self._update_progress(progress_label, "✅ AI Inpaint Complete!")
+                    self._update_progress(
+                        progress_label, f"✅ AI Inpaint Complete!{self._cost_suffix()}"
+                    )
                     print(f"DEBUG: AI Inpaint Complete - {import_message}")
                 else:
                     self._update_progress(
@@ -3588,7 +3738,10 @@ class GimpAIPlugin(Gimp.PlugIn):
             if not api_key:
                 self._update_progress(progress_label, "❌ No OpenAI API key found!")
                 Gimp.message(
-                    "❌ No OpenAI API key found!\n\nPlease set your API key in:\n- config.json file\n- OPENAI_API_KEY environment variable"
+                    "No OpenAI API key configured.\n\n"
+                    "Go to Filters > AI > Settings and paste your key.\n\n"
+                    "Get one at https://platform.openai.com/api-keys - or set "
+                    "the OPENAI_API_KEY environment variable instead."
                 )
                 return procedure.new_return_values(
                     Gimp.PDBStatusType.CANCEL, GLib.Error()
@@ -3745,7 +3898,10 @@ class GimpAIPlugin(Gimp.PlugIn):
                                 progress_label,
                                 "✅ Layer Composite completed successfully!",
                             )
-                            Gimp.message("✅ Layer Composite completed successfully!")
+                            Gimp.message(
+                                "✅ Layer Composite completed successfully!"
+                                f"{self._cost_suffix()}"
+                            )
                             print("DEBUG: Layer composite creation successful")
                         else:
                             raise Exception(
@@ -3769,7 +3925,10 @@ class GimpAIPlugin(Gimp.PlugIn):
                             temp_image.delete()
 
                             Gimp.progress_update(1.0)  # 100% - Complete
-                            Gimp.message("✅ Layer Composite completed successfully!")
+                            Gimp.message(
+                                "✅ Layer Composite completed successfully!"
+                                f"{self._cost_suffix()}"
+                            )
                         else:
                             raise Exception("Failed to create image from result data")
                     else:
@@ -3937,7 +4096,9 @@ class GimpAIPlugin(Gimp.PlugIn):
                 self._update_progress(
                     progress_label, "✅ GPT-Image-1 layer generated successfully!"
                 )
-                Gimp.message("✅ GPT-Image-1 layer generated successfully!")
+                Gimp.message(
+                    f"✅ Layer generated successfully!{self._cost_suffix()}"
+                )
                 return procedure.new_return_values(
                     Gimp.PDBStatusType.SUCCESS, GLib.Error()
                 )
@@ -3970,6 +4131,29 @@ class GimpAIPlugin(Gimp.PlugIn):
                 dialog.destroy()
 
     def run_settings(self, procedure, run_mode, image, drawables, config, run_data):
+        """Open the settings dialog from the menu.
+
+        This name previously ran an HTTP test and was never registered, so
+        there was no Settings menu entry at all - the only way in was a button
+        inside the inpainting dialog, which is not where a new user looks for
+        the API key field.
+        """
+        if run_mode == Gimp.RunMode.NONINTERACTIVE:
+            Gimp.message("AI Settings cannot be opened non-interactively.")
+            return procedure.new_return_values(
+                Gimp.PDBStatusType.CALLING_ERROR, GLib.Error()
+            )
+
+        self._show_settings_dialog(None)
+        return procedure.new_return_values(Gimp.PDBStatusType.SUCCESS, GLib.Error())
+
+    def run_test_connection(self, procedure, run_mode, image, drawables, config, run_data):
+        """Check that the API is reachable and the key works.
+
+        Worth a menu entry: it separates "my key is wrong" from "my network
+        blocks this" from "the plugin is broken", which is most of what a
+        support conversation is trying to establish.
+        """
         print("DEBUG: Testing HTTP functionality...")
 
         # Test HTTP request

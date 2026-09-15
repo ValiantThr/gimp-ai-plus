@@ -415,7 +415,7 @@ def print_next_steps():
     print("📖 For more help:")
     print("   • Installation guide: INSTALL.md")
     print("   • Troubleshooting: TROUBLESHOOTING.md")
-    print("   • Report issues: https://github.com/lukaso/gimp-ai/issues")
+    print("   • Report issues: https://github.com/ValiantThr/gimp-ai-plus/issues")
     print()
     print("🎉 Enjoy using GIMP AI Plugin!")
 

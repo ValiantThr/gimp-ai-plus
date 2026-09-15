@@ -169,7 +169,7 @@ NEED HELP?
 
 📖 See INSTALL.md for detailed step-by-step instructions
 🐛 Having issues? Check TROUBLESHOOTING.md
-📝 Report bugs: https://github.com/lukaso/gimp-ai/issues
+📝 Report bugs: https://github.com/ValiantThr/gimp-ai-plus/issues
 
 USAGE:
 ------

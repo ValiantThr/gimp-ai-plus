@@ -125,22 +125,27 @@ Status is updated as phases land.
 4. ~~**API error bodies mostly swallowed.**~~ **Fixed in Phase 1.** `OpenAIError`
    carries status, code and message from the API's own response, with
    `user_message()` for display.
-5. **Plugin stdout goes nowhere on Windows.** `pygimp_win.interp` maps `.py`
-   plug-ins to `pythonw.exe`, which has no console, so `print()` output is
-   discarded in normal GUI use. Debugging requires `gimp-console-3.2.exe`. A real
-   logging path is still needed. *(Phase 5.)*
+5. ~~**Plugin stdout goes nowhere on Windows.**~~ **Fixed in Phase 5.** `.py`
+   plug-ins run under `pythonw.exe`, which has no console, so every `print()`
+   was discarded in normal GUI use - leaving nothing to ask a user for when
+   something went wrong. `sys.stdout` and `sys.stderr` are now teed to
+   `<GIMP config>/gimp-ai-plugin/gimp-ai-plus.log`, which catches all the
+   existing debug output without touching hundreds of call sites. The path is
+   shown in Settings.
 6. ~~**Emoji printed to a cp1252 stdout.**~~ **Fixed in Phase 1.** All `print()`
    output across the plugin and tests is ASCII; the suite now runs on Windows
    with no `PYTHONIOENCODING` workaround. `Gimp.message()` keeps its emoji —
    those go through GLib and are safe.
-7. **Missing `set_i18n()` override.** GIMP 3.2 emits nine locale-catalog warnings
-   per run without it. *(Phase 5.)*
+7. ~~**Missing `set_i18n()` override.**~~ **Fixed in Phase 5.** `do_set_i18n()`
+   returns False, taking the locale-catalogue warnings from nine per run to
+   none. They looked like errors and were not.
 8. ~~**Dead imports.**~~ **Fixed in Phase 1.** Removed with
    `_create_multipart_data`, whose replacement lives in `openai_client`.
-9. **Stale project docs.** `README.md` and `INSTALL.md` are corrected for the
-   three-file layout, but `.github/copilot-instructions.md` still describes v0.8,
-   names the wrong config path, and claims the API accepts only three fixed
-   sizes. *(Phase 3 invalidates the last of those; rewrite then.)*
+9. ~~**Stale project docs.**~~ **Fixed in Phase 5.** `copilot-instructions.md`,
+   `CHANGELOG.md` and `TODO.md` all described upstream v0.8 and are rewritten
+   for the fork. Twenty-one links across six files pointed users at upstream's
+   issue tracker - a dormant repository belonging to someone else - and now
+   point here.
 
 10. ~~**Focused inpainting never sent the selection.**~~ **Fixed.**
     `_create_full_size_mask_then_scale()` built the mask canvas at extract-region
@@ -171,6 +176,13 @@ Status is updated as phases land.
     coordinate and mask methods need none of that. `tests/gimp_integration.py`
     works around it by grafting the methods onto a plain object. Phase 3 should
     lift them into a class that does not inherit from `Gimp.PlugIn`.
+12b. ~~**No Settings menu.**~~ **Fixed in Phase 5.** `run_settings` existed but
+    was never registered, and in any case ran an HTTP test rather than opening
+    settings. There was no `Filters > AI > Settings` entry at all; the only way
+    to the API key field was a button inside the inpainting dialog. A real
+    settings procedure is registered, and the old HTTP test is now
+    `Filters > AI > Test Connection`, which is genuinely useful for separating
+    a bad key from a blocked network.
 13. ~~**Procedures are dialog-only.**~~ **Fixed.** All three took `run_mode`
     and ignored it, always showing a GTK dialog. Each now declares its inputs as
     procedure arguments (`prompt`, plus `mode` for inpainting and `use-mask` for
@@ -196,8 +208,9 @@ Status is updated as phases land.
   detail. The legacy path is untouched for the 1.x models, which genuinely are fixed-size.
 - **Phase 4 — New capabilities.** `background: transparent`, `output_format`, `n > 1` with a
   variant picker, and `stream` + `partial_images` for live preview.
-- **Phase 5 — Polish.** Logging behind the existing `debug_mode` flag, per-call cost readout
-  from the API's `usage` field, corrected docs, fork CHANGELOG.
+- **Phase 5 — Release readiness.** *(complete)* Log file, `set_i18n()`, Settings and Test
+  Connection menu entries, cost display, a first-run message that points at the menu rather
+  than a file the user would have to create, version 1.0.0, and docs rewritten for the fork.
 
 ## Testing
 

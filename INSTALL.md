@@ -53,7 +53,7 @@ You need **exactly 3 files**:
 
 ### Option A: Download Release Package with Automated Installer (Easiest!)
 
-1. Go to the [Releases page](https://github.com/lukaso/gimp-ai/releases)
+1. Go to the [Releases page](https://github.com/ValiantThr/gimp-ai-plus/releases)
 2. Download the latest `gimp-ai-plugin-vX.X.X.zip` file
 3. Extract the ZIP file
 4. Run the automated installer:
@@ -68,13 +68,13 @@ You need **exactly 3 files**:
 
 ### Option B: Download from GitHub Release (Manual Install)
 
-1. Go to the [Releases page](https://github.com/lukaso/gimp-ai/releases)
+1. Go to the [Releases page](https://github.com/ValiantThr/gimp-ai-plus/releases)
 2. Download the latest `gimp-ai-plugin-vX.X.X.zip` file
 3. Extract the ZIP file - you'll see a `gimp-ai-plugin` folder containing all three files
 
 ### Option C: Download Individual Files
 
-1. Go to the [GitHub repository](https://github.com/lukaso/gimp-ai)
+1. Go to the [GitHub repository](https://github.com/ValiantThr/gimp-ai-plus)
 2. Click on `gimp-ai-plugin.py` → Click "Raw" → Save the file (Ctrl+S or Cmd+S)
 3. Go back and click on `coordinate_utils.py` → Click "Raw" → Save the file
 4. Go back and click on `openai_client.py` → Click "Raw" → Save the file
@@ -349,7 +349,7 @@ Let's verify everything is working:
 ### Still Having Issues?
 
 See the detailed [TROUBLESHOOTING.md](TROUBLESHOOTING.md) guide or report issues at:
-https://github.com/lukaso/gimp-ai/issues
+https://github.com/ValiantThr/gimp-ai-plus/issues
 
 ---
 
@@ -366,7 +366,7 @@ Congratulations! You've successfully installed the GIMP AI Plugin.
 
 ### Getting Help:
 
-- 💬 **Issues**: [GitHub Issues](https://github.com/lukaso/gimp-ai/issues)
+- 💬 **Issues**: [GitHub Issues](https://github.com/ValiantThr/gimp-ai-plus/issues)
 - 📖 **Troubleshooting**: [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
 - 🐛 **Beta Feedback**: We appreciate bug reports and suggestions!
 

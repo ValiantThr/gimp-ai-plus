@@ -32,7 +32,7 @@ When you merge the PR to `main`, the GitHub Actions workflow automatically:
 ### Step 3: Review the Release
 
 After the workflow completes:
-1. Go to the repository's [Releases page](https://github.com/lukaso/gimp-ai/releases)
+1. Go to the repository's [Releases page](https://github.com/ValiantThr/gimp-ai-plus/releases)
 2. Review the auto-generated release notes
 3. Edit if needed to add highlights or clarifications
 4. The release ZIP is already attached and ready for download
@@ -146,7 +146,7 @@ Included in the ZIP file:
 ## 🆘 Need Help?
 
 - 📖 Check **TROUBLESHOOTING.md** (in the ZIP)
-- 🐛 [Report issues on GitHub](https://github.com/lukaso/gimp-ai/issues)
+- 🐛 [Report issues on GitHub](https://github.com/ValiantThr/gimp-ai-plus/issues)
 
 ## 🧪 Beta Notes
 

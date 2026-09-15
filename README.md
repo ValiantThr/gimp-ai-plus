@@ -26,7 +26,7 @@ different model any time under **Settings → AI Model**.
 
 ### Easiest Way: Automated Installer 🎯
 
-1. **Download** the [latest release ZIP](https://github.com/lukaso/gimp-ai/releases)
+1. **Download** the [latest release ZIP](https://github.com/ValiantThr/gimp-ai-plus/releases)
 2. **Extract** the ZIP file
 3. **Run** the installer: `python3 install_plugin.py`
 4. **Restart GIMP** and configure your API key
@@ -199,7 +199,7 @@ dialog to prompt for it.
 ## 🐛 Find Issues?
 
 - Check [TROUBLESHOOTING.md](TROUBLESHOOTING.md) first
-- Report at: [GitHub Issues](https://github.com/yourusername/gimp-ai/issues)
+- Report at: [GitHub Issues](https://github.com/ValiantThr/gimp-ai-plus/issues)
 
 ## 📚 Documentation
 
