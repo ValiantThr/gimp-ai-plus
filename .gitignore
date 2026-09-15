@@ -3,3 +3,11 @@ tests/__pycache__
 *.pyc
 dist/
 *.zip
+
+# Secrets — never commit a real key.
+# The plugin reads config.json from the directory next to gimp-ai-plugin.py
+# (see gimp-ai-plugin.py:82), so anyone running it from a checkout will have a
+# live key sitting in the working tree. Only config.json.example is tracked.
+config.json
+.env
+*.key
