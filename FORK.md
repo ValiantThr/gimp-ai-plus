@@ -114,6 +114,28 @@ Status is updated as phases land.
    names the wrong config path, and claims the API accepts only three fixed
    sizes. *(Phase 3 invalidates the last of those; rewrite then.)*
 
+10. ~~**Focused inpainting never sent the selection.**~~ **Fixed.**
+    `_create_full_size_mask_then_scale()` built the mask canvas at extract-region
+    size but composited the full-image selection channel without shifting it, so
+    in focused mode the selection landed outside the canvas and was clipped away,
+    producing an all-black mask that marked nothing. The model then ignored the
+    mask and re-rendered the whole frame. Confirmed from debug PNGs: before the
+    fix the 1024x1024 mask held 7,168 transparent pixels, all in rows 0-2 and
+    1020-1023 (letterbox padding); after, 150,452 in a contiguous antialiased
+    ellipse at (293,299)-(730,724). Full-image mode extracts from (0,0) and was
+    unaffected, which is why only the default mode was broken. The correct
+    implementation already existed in `_create_context_mask()` but is unreachable:
+    it early-returns into the broken function whenever `padding_info` is present,
+    which every producer sets unconditionally. Phase 3 should collapse the two.
+11. ~~**Edits came back mostly transparent.**~~ **Fixed.** No `background`
+    parameter was sent, so the API default of `auto` applied and the model
+    returned RGBA that was only 44.9% fully opaque with 21.7% fully transparent -
+    holes punched through the layer on compositing. A/B tested against the real
+    API with the user's own input and mask: `background="opaque"` returns RGB with
+    no alpha channel at all, at identical token cost. Now the client's default for
+    edits; generation is untouched, since a transparent background is a legitimate
+    request there.
+
 ## Roadmap
 
 - **Phase 0 — Baseline.** *(complete)* Fork, verify upstream against GIMP 3.2.6, record findings,

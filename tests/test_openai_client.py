@@ -345,6 +345,52 @@ def test_request_shape():
     return True
 
 
+def test_edit_requests_opaque_background():
+    """Edits must ask for an opaque background.
+
+    Under the API default of background="auto" the model may return a largely
+    transparent RGBA image, which punches holes through the layer when
+    composited back into GIMP. Measured against a real inpaint: 21.7% of
+    pixels fully transparent, only 44.9% fully opaque.
+    """
+    print("\n=== Testing opaque background on edits ===")
+
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {"data": [{"b64_json": base64.b64encode(b"IMG").decode()}]}
+            ).encode()
+
+    def fake_urlopen(req, timeout=None, context=None):
+        captured["body"] = req.data
+        return FakeResponse()
+
+    original = openai_client.urllib.request.urlopen
+    openai_client.urllib.request.urlopen = fake_urlopen
+    try:
+        client = OpenAIImageClient("sk-test")
+        client.edit(_fake_png(8, 8), "a fly", mask=_fake_png(8, 8))
+        body = captured["body"]
+        assert b'name="background"' in body, "background field missing"
+        assert b"opaque" in body, "background is not opaque"
+        print("[ok] edits send background=opaque by default")
+
+        client.edit(_fake_png(8, 8), "a fly", background="transparent")
+        assert b"transparent" in captured["body"]
+        print("[ok] callers can still override it")
+    finally:
+        openai_client.urllib.request.urlopen = original
+    return True
+
+
 def run_all_tests():
     """Run every openai_client test, returning True if all passed."""
     print("Running openai_client Tests")
@@ -362,6 +408,7 @@ def run_all_tests():
         test_no_key_rejected,
         test_http_error_surfaces,
         test_request_shape,
+        test_edit_requests_opaque_background,
     ]
 
     failures = []

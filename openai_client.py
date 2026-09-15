@@ -294,12 +294,22 @@ class OpenAIImageClient:
 
     def edit(self, images, prompt, mask=None, model=DEFAULT_MODEL,
              size="1024x1024", quality="high", n=1, moderation="low",
-             input_fidelity="high", timeout=None, **extra):
+             input_fidelity="high", background="opaque", timeout=None,
+             **extra):
         """POST /images/edits.
 
         `images` is bytes or a base64 str for single-image inpainting, or a
         list of either for multi-reference compositing. `mask` is PNG bytes
         whose transparent region marks the area to regenerate.
+
+        `background` defaults to "opaque" rather than the API's "auto".
+        Under "auto" the model may decide an edit warrants a transparent
+        background and return an RGBA image that is only ~45% opaque -
+        measured against a real inpaint, 21.7% of pixels came back fully
+        transparent. Compositing that back into GIMP punches holes through
+        the layer. "opaque" returns RGB with no alpha channel at all, at
+        identical token cost. Generation is left alone; a transparent
+        background is a legitimate thing to ask for there.
         """
         fields = {
             "model": model,
@@ -309,6 +319,7 @@ class OpenAIImageClient:
             "quality": quality,
             "moderation": moderation,
             "input_fidelity": input_fidelity,
+            "background": background,
         }
         fields.update({k: str(v) for k, v in extra.items()})
 
