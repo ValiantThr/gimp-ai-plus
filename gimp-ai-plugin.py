@@ -1877,16 +1877,19 @@ class GimpAIPlugin(Gimp.PlugIn):
                 # Full image mode: create mask at full image size
                 mask_base_width = image.get_width()
                 mask_base_height = image.get_height()
+                extract_x, extract_y = 0, 0
                 print(
                     f"DEBUG: Creating mask at full image size {mask_base_width}x{mask_base_height}, then scaling like image"
                 )
             else:
                 # Focused/contextual mode: create mask at extract region size
                 extract_region = context_info["extract_region"]
+                extract_x, extract_y = extract_region[0], extract_region[1]
                 mask_base_width = extract_region[2]
                 mask_base_height = extract_region[3]
                 print(
-                    f"DEBUG: Creating mask at extract region size {mask_base_width}x{mask_base_height}, then scaling like image"
+                    f"DEBUG: Creating mask at extract region ({extract_x},{extract_y}) "
+                    f"size {mask_base_width}x{mask_base_height}, then scaling like image"
                 )
 
             # Use the EXISTING working mask creation logic, but at correct base size
@@ -1924,13 +1927,28 @@ class GimpAIPlugin(Gimp.PlugIn):
             selection_source = graph.create_child("gegl:buffer-source")
             selection_source.set_property("buffer", selection_buffer)
 
+            # The selection channel is in full-image coordinates, but in focused
+            # mode the mask canvas is only the extract region. Without this shift
+            # the selection is composited at absolute image coordinates, lands
+            # outside the smaller canvas, and is clipped away entirely - leaving
+            # an all-black mask that marks nothing for inpainting. Full-image
+            # mode extracts from (0,0), which is why it was unaffected.
+            translate = graph.create_child("gegl:translate")
+            translate.set_property("x", float(-extract_x))
+            translate.set_property("y", float(-extract_y))
+
             composite = graph.create_child("gegl:over")
             output = graph.create_child("gegl:write-buffer")
             output.set_property("buffer", mask_shadow_buffer)
 
             mask_source.link(composite)
-            selection_source.connect_to("output", composite, "aux")
+            selection_source.link(translate)
+            translate.connect_to("output", composite, "aux")
             composite.link(output)
+            print(
+                f"DEBUG: Compositing selection into extract-region coordinates: "
+                f"translate by ({-extract_x},{-extract_y})"
+            )
             output.process()
 
             mask_shadow_buffer.flush()
