@@ -226,6 +226,16 @@ Releases are automated via GitHub Actions. See **[RELEASE.md](RELEASE.md)** for 
 - **`build_release.py`** - Creates distributable ZIP packages (used by workflow)
 - **`tools/bump_version.py`** - Bumps version in `gimp-ai-plugin.py` (used by workflow)
 
-## ⚖️ License
+## ⚖️ License and credits
 
-MIT License - see [LICENSE](LICENSE) file for details
+MIT License — see [LICENSE](LICENSE).
+
+This is a fork of **[lukaso/gimp-ai](https://github.com/lukaso/gimp-ai)** by
+Lukas Oberhuber, who wrote the original plugin: the GIMP integration, the
+coordinate and masking pipeline, and the three features this builds on. It is
+MIT-licensed, and that work remains his.
+
+This fork adds current OpenAI models, native-resolution output, scripting
+support and a number of fixes — see [CHANGELOG.md](CHANGELOG.md). Please report
+issues with *this* version here rather than upstream, which is a separate
+project and unmaintained since November 2025.

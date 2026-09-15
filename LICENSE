@@ -1,6 +1,12 @@
 MIT License
 
 Copyright (c) 2025 Lukas Oberhuber
+Copyright (c) 2026 ValiantThr
+
+This project is a fork of https://github.com/lukaso/gimp-ai, which is the work
+of Lukas Oberhuber and is licensed under the same terms. His copyright notice
+above is retained as the MIT License requires; the second line covers the
+changes made in this fork.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
