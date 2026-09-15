@@ -1,17 +1,29 @@
-# GIMP AI Plugin Beta
+# gimp-ai-plus
 
-A Python plugin for GIMP 3.0.4+ that integrates AI image generation capabilities directly into GIMP. This is a **beta release** seeking testers on all platforms.
+**AI inpainting, image generation and layer compositing inside GIMP 3, powered
+by OpenAI's GPT-Image models.**
 
-Supports OpenAI's current image models, defaulting to **GPT-Image-2.5 Flare** —
-cheaper, faster and better than the `gpt-image-1` upstream hardcodes. Pick a
-different model any time under **Settings → AI Model**.
+Select an area, describe what you want, and it appears on a new layer — without
+leaving GIMP or round-tripping through a browser. Three files to install and no
+external dependencies.
+
+Defaults to **GPT-Image-2.5 Flare**; five other models are a dropdown away.
+Requests are sized to the area you are working on rather than a fixed 1024px
+shape, so edits keep their detail.
 
 ## ✨ Features
 
-- **🎨 AI Inpainting**: Fill selected areas with AI-generated content using text prompts and selection masks
-- **🖼️ AI Image Generation**: Create new images from text descriptions as new layers
-- **🔄 AI Layer Composite**: Intelligently blend AI content into existing images
-- **⚙️ Easy Configuration**: Built-in settings dialog, no external config files needed
+- **🎨 Inpainting** — select an area, describe the change, get it on a new layer
+  with the surrounding image preserved
+- **🖼️ Image generation** — create an image from a text description as a new layer
+- **🔄 Layer compositing** — blend several layers together with AI guidance
+- **🧠 Six models** — GPT-Image-2.5 Flare and Sunburst, GPT-Image-2, 1.5, 1 and
+  1 Mini, switchable at any time
+- **🔍 Native-resolution output** — no forced downscale to a fixed shape
+- **🤖 Scriptable** — every feature runs without a dialog, from Python-Fu or a
+  batch script
+- **💸 Cost shown per call**, so you can see what a session costs
+- **📦 Zero dependencies** — GIMP's own Python and nothing else
 
 ## 📋 Requirements
 
