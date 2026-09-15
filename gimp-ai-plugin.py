@@ -11,13 +11,8 @@ import sys
 import os
 import gi
 import json
-import urllib.request
-import urllib.parse
-import urllib.error
-import ssl
 import base64
 import tempfile
-import uuid
 
 gi.require_version("Gimp", "3.0")
 gi.require_version("GimpUi", "3.0")
@@ -37,6 +32,15 @@ from coordinate_utils import (
     extract_context_with_selection,
     calculate_result_placement,
     calculate_scale_from_shape,
+)
+
+# All OpenAI communication goes through this module - one request builder,
+# one error handler, one timeout policy, one TLS policy.
+from openai_client import (
+    OpenAIImageClient,
+    OpenAIError,
+    download_bytes,
+    png_info,
 )
 
 
@@ -134,54 +138,15 @@ class GimpAIPlugin(Gimp.PlugIn):
                 print(f"DEBUG: All config save attempts failed: {e2}")
                 return False
 
-    def _make_url_request(self, req_or_url, timeout=60, headers=None):
+    def _get_client(self):
+        """Build an OpenAI client from the configured key.
+
+        Raises OpenAIError if no key is configured, so every caller fails the
+        same way instead of each checking for None.
         """
-        Make URL request with automatic SSL fallback for certificate errors.
-
-        Args:
-            req_or_url: Either a urllib.request.Request object or URL string
-            timeout: Request timeout in seconds (default: 60)
-            headers: Optional dict of headers to add (only if req_or_url is string)
-
-        Returns:
-            urllib response object
-
-        Raises:
-            urllib.error.URLError: If both normal and SSL-bypassed requests fail
-        """
-        try:
-            # First attempt with normal SSL verification
-            if isinstance(req_or_url, str):
-                # Create Request object from URL string
-                req = urllib.request.Request(req_or_url)
-                if headers:
-                    for key, value in headers.items():
-                        req.add_header(key, value)
-            else:
-                req = req_or_url
-
-            return urllib.request.urlopen(req, timeout=timeout)
-
-        except (ssl.SSLError, urllib.error.URLError) as ssl_err:
-            # Check if it's an SSL-related error
-            if "SSL" in str(ssl_err) or "CERTIFICATE" in str(ssl_err):
-                print(
-                    f"DEBUG: SSL verification failed, trying with SSL bypass: {ssl_err}"
-                )
-            else:
-                # Not an SSL error, re-raise it
-                raise ssl_err
-
-            # Fallback to unverified SSL if certificate fails
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-
-            try:
-                return urllib.request.urlopen(req, context=ctx, timeout=timeout)
-            except Exception as fallback_err:
-                print(f"DEBUG: SSL bypass also failed: {fallback_err}")
-                raise fallback_err
+        return OpenAIImageClient(
+            self._get_api_key(), log=lambda msg: print(f"DEBUG: [api] {msg}")
+        )
 
     def _add_to_prompt_history(self, prompt):
         """Add prompt to history, keeping last 10 unique prompts"""
@@ -1676,76 +1641,49 @@ class GimpAIPlugin(Gimp.PlugIn):
     def _call_openai_generation(
         self, prompt, api_key, size="auto", progress_label=None
     ):
-        """Call OpenAI GPT-Image-1 API for image generation with progress updates"""
+        """Generate an image from a prompt.
+
+        Returns (success, message, image_bytes).
+        """
+        # "auto" predates the caller working out its own size; keep the same
+        # landscape default so behaviour is unchanged.
+        optimal_size = "1536x1024" if size == "auto" else size
+
         try:
-            import json
-            import urllib.request
-
-            print(f"DEBUG: Calling GPT-Image-1 generation API with prompt: {prompt}")
-
-            # Determine optimal size
-            if size == "auto":
-                optimal_size = "1536x1024"  # Default landscape
-            else:
-                optimal_size = size
-
-            print(f"DEBUG: Using size {optimal_size} for generation")
-
-            # Prepare the request data
-            data = {
-                "model": "gpt-image-1",
-                "prompt": prompt,
-                "n": 1,
-                "size": optimal_size,
-                "quality": "high",
-            }
-
-            # Create the request
-            json_data = json.dumps(data).encode("utf-8")
-            url = "https://api.openai.com/v1/images/generations"
-            req = urllib.request.Request(url, data=json_data)
-            req.add_header("Content-Type", "application/json")
-            req.add_header("Authorization", f"Bearer {api_key}")
-
-            print("DEBUG: Sending real GPT-Image-1 generation request...")
-
-            # Progress during network operation (same pattern as _call_openai_edit)
-            if progress_label:
-                self._update_progress(
-                    progress_label, "🚀 Sending request to GPT-Image-1..."
-                )
-
-            # Make the API call with progress updates during the call
-            with self._make_url_request(req, timeout=180) as response:
-                response_data = json.loads(response.read().decode("utf-8"))
-
-            print("DEBUG: GPT-Image-1 generation response received")
+            client = OpenAIImageClient(api_key, log=lambda m: print(f"DEBUG: [api] {m}"))
 
             if progress_label:
-                self._update_progress(progress_label, "✅ Processing AI response...")
+                self._update_progress(progress_label, "Sending request...")
 
-            # Process the response
-            if "data" in response_data and len(response_data["data"]) > 0:
-                result_data = response_data["data"][0]
+            result = client.generate(prompt, size=optimal_size, quality="high")
 
-                if "b64_json" in result_data:
-                    print("DEBUG: Processing base64 image data from GPT-Image-1")
-                    import base64
+            if progress_label:
+                self._update_progress(progress_label, "Processing AI response...")
 
-                    image_data = base64.b64decode(result_data["b64_json"])
-                    print(f"DEBUG: Decoded {len(image_data)} bytes of image data")
+            image_data = result.image
+            if isinstance(image_data, str):
+                # A URL rather than inline base64; fetch it under the same policy.
+                image_data = client.download(image_data)
 
-                    return True, "Image generation successful", image_data
-                else:
-                    print("ERROR: No b64_json in GPT-Image-1 response")
-                    return False, "No image data in response", None
-            else:
-                print("ERROR: No data in GPT-Image-1 response")
-                return False, "No data in API response", None
+            print(f"DEBUG: Decoded {len(image_data)} bytes of image data")
+            self._log_usage(result)
+            return True, "Image generation successful", image_data
 
+        except OpenAIError as e:
+            print(f"ERROR: Image generation failed: {e}")
+            return False, e.user_message(), None
         except Exception as e:
-            print(f"ERROR: GPT-Image-1 generation API call failed: {str(e)}")
+            print(f"ERROR: Image generation failed unexpectedly: {e}")
             return False, str(e), None
+
+    def _log_usage(self, result):
+        """Record token usage from a response.
+
+        Phase 5 turns this into a per-call cost readout in the UI; for now it
+        gives us real numbers in the debug log.
+        """
+        if result.usage:
+            print(f"DEBUG: [api] usage {result.usage}")
 
     def _call_openai_generation_threaded(
         self, prompt, api_key, size="auto", progress_label=None
@@ -2677,47 +2615,6 @@ class GimpAIPlugin(Gimp.PlugIn):
         except Exception as e:
             print(f"DEBUG: Color matching failed: {e}")
 
-    def _create_multipart_data(self, fields, files):
-        """Create multipart form data for file upload - supports image arrays"""
-        import email.mime.multipart
-        import email.mime.text
-        import email.mime.application
-        import uuid
-
-        boundary = uuid.uuid4().hex
-        body = b""
-
-        # Add text fields
-        for key, value in fields.items():
-            body += f"--{boundary}\r\n".encode()
-            body += f'Content-Disposition: form-data; name="{key}"\r\n\r\n'.encode()
-            body += f"{value}\r\n".encode()
-
-        # Add file fields - handle both single files and arrays
-        for key, file_data in files.items():
-            if key == "image" and isinstance(file_data, list):
-                # Handle image array for composite mode - use image[] array syntax
-                for i, (filename, data, content_type) in enumerate(file_data):
-                    body += f"--{boundary}\r\n".encode()
-                    body += f'Content-Disposition: form-data; name="image[]"; filename="{filename}"\r\n'.encode()
-                    body += f"Content-Type: {content_type}\r\n\r\n".encode()
-                    body += data
-                    body += b"\r\n"
-                print(f"DEBUG: Added {len(file_data)} images to multipart data")
-            else:
-                # Handle single file (like mask or single image)
-                filename, data, content_type = file_data
-                body += f"--{boundary}\r\n".encode()
-                body += f'Content-Disposition: form-data; name="{key}"; filename="{filename}"\r\n'.encode()
-                body += f"Content-Type: {content_type}\r\n\r\n".encode()
-                body += data
-                body += b"\r\n"
-
-        # End boundary
-        body += f"--{boundary}--\r\n".encode()
-
-        return body, boundary
-
     def _call_openai_edit(
         self,
         image_data,
@@ -2772,7 +2669,6 @@ class GimpAIPlugin(Gimp.PlugIn):
                 }
                 return True, "API call successful (mock - no API key)", mock_response
 
-            url = "https://api.openai.com/v1/images/edits"
 
             # Prepare multipart form data for GPT-Image-1
             fields = {
@@ -3009,60 +2905,52 @@ class GimpAIPlugin(Gimp.PlugIn):
                     "mask": ("mask.png", mask_data, "image/png"),
                 }
 
-            body, boundary = self._create_multipart_data(fields, files)
+            # Hand the prepared payloads to the client, which owns multipart
+            # encoding, the timeout, the TLS policy and error reporting.
+            image_entries = files["image"]
+            if isinstance(image_entries, list):
+                images = [data for (_name, data, _ctype) in image_entries]
+            else:
+                images = image_entries[1]
 
-            # Create request
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": f"multipart/form-data; boundary={boundary}",
-                "User-Agent": "GIMP-AI-Plugin/1.0",
-            }
+            mask_entry = files.get("mask")
+            mask_bytes = mask_entry[1] if mask_entry else None
 
-            req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+            client = OpenAIImageClient(api_key, log=lambda m: print(f"DEBUG: [api] {m}"))
 
-            print("DEBUG: Sending real GPT-Image-1 API request...")
+            if progress_label:
+                self._update_progress(progress_label, "Sending request...", 0.65)
+            else:
+                Gimp.progress_set_text("Sending request...")
+                Gimp.progress_update(0.65)
 
-            # Progress during network operation
-            print("DEBUG: Setting progress text to 'Sending request to GPT-Image-1...'")
-            # if progress_label:
-            #     self._update_dual_progress(progress_label, "Sending request to GPT-Image-1...", 0.65)
-            # else:
-            #     # Fallback to old system if no dialog progress
-            #     Gimp.progress_set_text("Sending request to GPT-Image-1...")
-            #     Gimp.progress_update(0.65)  # 65% - API request started (after 60% mask)
-            #     Gimp.displays_flush()  # Force UI update before blocking network call
+            result = client.edit(
+                images,
+                prompt,
+                mask=mask_bytes,
+                model=fields["model"],
+                size=fields["size"],
+                quality=fields["quality"],
+                moderation=fields["moderation"],
+                input_fidelity=fields["input_fidelity"],
+            )
 
-            with self._make_url_request(req, timeout=120) as response:
-                # More progress during data reading
-                if progress_label:
-                    self._update_progress(
-                        progress_label, "Processing AI response...", 0.7
-                    )
-                else:
-                    Gimp.progress_set_text("Processing AI response...")
-                    Gimp.progress_update(0.7)  # 70% - Reading response
+            if progress_label:
+                self._update_progress(progress_label, "Processing AI response...", 0.75)
+            else:
+                Gimp.progress_set_text("Processing AI response...")
+                Gimp.progress_update(0.75)
 
-                response_data = response.read().decode("utf-8")
+            self._log_usage(result)
+            # Callers expect the raw API response shape.
+            return True, "API call successful", result.raw
 
-                if progress_label:
-                    self._update_progress(progress_label, "Parsing AI result...", 0.75)
-                else:
-                    Gimp.progress_set_text("Parsing AI result...")
-                    Gimp.progress_update(0.75)  # 75% - Parsing JSON
-
-                response_json = json.loads(response_data)
-                print(
-                    f"DEBUG: GPT-Image-1 API response received: {len(response_data)} bytes"
-                )
-                return True, "GPT-Image-1 API call successful", response_json
-
-        except urllib.error.HTTPError as e:
-            error_body = e.read().decode("utf-8") if hasattr(e, "read") else str(e)
-            print(f"DEBUG: GPT-Image-1 API HTTP error: {e.code} - {error_body}")
-            return False, f"GPT-Image-1 API error {e.code}: {error_body[:200]}", None
+        except OpenAIError as e:
+            print(f"DEBUG: Image edit failed: {e}")
+            return False, e.user_message(), None
         except Exception as e:
-            print(f"DEBUG: GPT-Image-1 API call failed: {e}")
-            return False, f"GPT-Image-1 API call failed: {str(e)}", None
+            print(f"DEBUG: Image edit failed unexpectedly: {e}")
+            return False, str(e), None
 
     def _call_openai_edit_threaded(
         self,
@@ -3112,9 +3000,8 @@ class GimpAIPlugin(Gimp.PlugIn):
                 Gimp.progress_update(0.8)  # 80% - Starting download
                 Gimp.displays_flush()
 
-                # Download from URL
-                with self._make_url_request(image_url, timeout=60) as response:
-                    image_data = response.read()
+                # Download from URL, under the client's TLS and timeout policy
+                image_data = download_bytes(image_url)
 
             elif "b64_json" in result_data:
                 # Base64 format (GPT-Image-1 style)
@@ -3847,10 +3734,9 @@ class GimpAIPlugin(Gimp.PlugIn):
                         # URL format (fallback)
                         print("DEBUG: Downloading composite result from URL...")
 
-                        import urllib.request
-
-                        with urllib.request.urlopen(result_data["url"]) as response:
-                            image_data = response.read()
+                        # Was a bare urlopen() with no timeout, able to hang
+                        # the worker thread indefinitely.
+                        image_data = download_bytes(result_data["url"])
 
                         # Create new layer with result
                         temp_image = self._create_image_from_data(image_data)
@@ -3926,178 +3812,6 @@ class GimpAIPlugin(Gimp.PlugIn):
             print(f"DEBUG: Failed to create image from data: {e}")
             return None
 
-    def _generate_gpt_image_layer_threaded(
-        self, image, prompt, api_key, size="auto", progress_label=None
-    ):
-        """Threaded wrapper for GPT image generation to keep UI responsive"""
-        import threading
-        import time
-
-        print("DEBUG: Starting threaded GPT-Image-1 generation...")
-
-        # Shared storage for results
-        result = {"success": False, "completed": False}
-
-        def generation_thread():
-            try:
-                # Call the blocking API directly with progress updates
-                import json
-                import urllib.request
-                import ssl
-
-                # Determine optimal size based on image dimensions or user preference
-                if size == "auto":
-                    img_width = image.get_width()
-                    img_height = image.get_height()
-                    aspect_ratio = img_width / img_height
-
-                    if aspect_ratio > 1.2:  # Landscape
-                        optimal_size = "1536x1024"
-                    elif aspect_ratio < 0.83:  # Portrait
-                        optimal_size = "1024x1536"
-                    else:  # Square or close to square
-                        optimal_size = "1024x1024"
-                else:
-                    optimal_size = size
-
-                print(f"DEBUG: [THREAD] Using size {optimal_size} for generation")
-
-                # Prepare the request data
-                data = {
-                    "model": "gpt-image-1",
-                    "prompt": prompt,
-                    "n": 1,
-                    "size": optimal_size,
-                    "quality": "high",
-                }
-
-                # Create the request
-                json_data = json.dumps(data).encode("utf-8")
-                url = "https://api.openai.com/v1/images/generations"
-                req = urllib.request.Request(url, data=json_data)
-                req.add_header("Content-Type", "application/json")
-                req.add_header("Authorization", f"Bearer {api_key}")
-
-                print("DEBUG: [THREAD] Sending GPT-Image-1 generation request...")
-                if progress_label:
-                    update_progress = self._create_progress_callback(progress_label)
-                    update_progress("🚀 Sending request to GPT-Image-1...")
-
-                # Send request
-                with urllib.request.urlopen(req) as response:
-                    response_data = response.read().decode("utf-8")
-
-                # Parse response
-                response_json = json.loads(response_data)
-                print("DEBUG: [THREAD] GPT-Image-1 API response received")
-
-                if progress_label:
-                    update_progress("✅ Processing AI response...")
-
-                # Process the response
-                if "data" in response_json and len(response_json["data"]) > 0:
-                    result_data = response_json["data"][0]
-
-                    if "b64_json" in result_data:
-                        print(
-                            "DEBUG: [THREAD] Processing base64 image data from GPT-Image-1"
-                        )
-                        import base64
-
-                        image_data = base64.b64decode(result_data["b64_json"])
-                        print(
-                            f"DEBUG: [THREAD] Decoded {len(image_data)} bytes of image data"
-                        )
-
-                        # Create layer on main thread via GLib.idle_add
-                        layer_created = {"success": False}
-
-                        def create_layer():
-                            try:
-                                success = self._add_layer_from_data(image, image_data)
-                                layer_created["success"] = success
-                                return False
-                            except Exception as e:
-                                print(f"ERROR: [MAIN] Failed to create layer: {e}")
-                                layer_created["success"] = False
-                                return False
-
-                        GLib.idle_add(create_layer)
-
-                        # Wait for layer creation to complete
-                        import time
-
-                        while "success" not in layer_created:
-                            time.sleep(0.01)
-
-                        result["success"] = layer_created["success"]
-                    else:
-                        print("ERROR: [THREAD] No b64_json in GPT-Image-1 response")
-                        result["success"] = False
-                else:
-                    print("ERROR: [THREAD] No data in GPT-Image-1 response")
-                    result["success"] = False
-
-            except Exception as e:
-                print(f"ERROR: [THREAD] Image generation failed: {e}")
-                result["success"] = False
-            finally:
-                result["completed"] = True
-
-        # Start thread
-        thread = threading.Thread(target=generation_thread)
-        thread.daemon = True
-        thread.start()
-
-        # Keep UI responsive while waiting
-        max_wait_time = 400  # 6.7 minutes maximum wait (longer for image generation)
-        start_time = time.time()
-        last_update_time = start_time
-
-        while not result["completed"]:
-            current_time = time.time()
-            elapsed = current_time - start_time
-
-            # Update progress every 10 seconds
-            if progress_label and current_time - last_update_time > 10:
-                minutes = int(elapsed // 60)
-                if minutes > 0:
-                    self._update_progress(
-                        progress_label, f"🎨 Still generating... ({minutes}m elapsed)"
-                    )
-                else:
-                    self._update_progress(progress_label, "🎨 Generating image...")
-                last_update_time = current_time
-
-            # Check for cancellation
-            if self._check_cancel_and_process_events():
-                print("DEBUG: Image generation cancelled by user")
-                if progress_label:
-                    self._update_progress(
-                        progress_label, "❌ Generation cancelled by user"
-                    )
-                result["success"] = False
-                break
-
-            # Check for timeout
-            if elapsed > max_wait_time:
-                print(
-                    f"DEBUG: Image generation thread timeout after {max_wait_time} seconds"
-                )
-                if progress_label:
-                    self._update_progress(progress_label, "❌ Generation timed out")
-                result["success"] = False
-                break
-
-            # Small sleep to prevent CPU spinning
-            time.sleep(0.1)
-
-        # Thread completed, return results
-        print(
-            f"DEBUG: Threaded image generation completed: success={result['success']}"
-        )
-        return result["success"]
-
     def _add_layer_from_data(self, image, image_data):
         """Add image from raw data as a new layer"""
         try:
@@ -4142,58 +3856,6 @@ class GimpAIPlugin(Gimp.PlugIn):
 
         except Exception as e:
             print(f"ERROR: Failed to add layer from data: {str(e)}")
-            return False
-
-    def _download_and_add_layer(self, image, image_url):
-        """Download image from URL and add as new layer"""
-        try:
-            import urllib.request
-            import tempfile
-            import os
-            import ssl
-
-            # Download the image to a temporary file
-            with self._make_url_request(image_url) as response:
-                image_data = response.read()
-
-            # Create temporary file
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".png", mode='wb') as temp_file:
-                temp_file.write(image_data)
-                temp_file.flush()
-                os.fsync(temp_file.fileno())
-                temp_file_path = temp_file.name
-
-            print(f"DEBUG: Downloaded image to: {temp_file_path}")
-
-            try:
-                # Load the image as a new layer
-                loaded_image = Gimp.file_load(
-                    Gimp.RunMode.NONINTERACTIVE, Gio.File.new_for_path(temp_file_path)
-                )
-                source_layer = loaded_image.get_layers()[0]
-
-                # Copy the layer to the current image
-                new_layer = Gimp.Layer.new_from_drawable(source_layer, image)
-                new_layer.set_name("GPT-Image Generated")
-
-                # Add the layer to the image
-                image.insert_layer(new_layer, None, 0)
-
-                # Clean up
-                loaded_image.delete()
-
-                print("DEBUG: Successfully added GPT-Image-1 layer")
-                return True
-
-            finally:
-                # Clean up temporary file
-                try:
-                    os.unlink(temp_file_path)
-                except:
-                    pass
-
-        except Exception as e:
-            print(f"ERROR: Failed to download and add layer: {str(e)}")
             return False
 
     def run_layer_generator(

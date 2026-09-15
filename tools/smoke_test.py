@@ -36,6 +36,10 @@ import time
 import urllib.error
 import urllib.request
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from openai_client import OpenAIError, OpenAIImageClient
+
 API_BASE = "https://api.openai.com/v1"
 
 # Output-token price per 1M, for rough cost calibration.
@@ -152,32 +156,13 @@ def estimate_cost(model, usage):
 
 def try_generation(model, api_key, size="1024x1024", quality="low"):
     """One minimal generation. Low quality keeps this a couple of cents."""
-    payload = {
-        "model": model,
-        "prompt": PROMPT,
-        "n": 1,
-        "size": size,
-        "quality": quality,
-    }
-    req = urllib.request.Request(
-        f"{API_BASE}/images/generations", data=json.dumps(payload).encode("utf-8")
-    )
-    req.add_header("Content-Type", "application/json")
-    req.add_header("Authorization", f"Bearer {api_key}")
-
     started = time.time()
     try:
-        with urllib.request.urlopen(req, timeout=180) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as err:
+        client = OpenAIImageClient(api_key)
+        result = client.generate(PROMPT, model=model, size=size, quality=quality)
+    except OpenAIError as err:
         elapsed = time.time() - started
-        detail = err.read().decode("utf-8", "replace")
-        try:
-            msg = json.loads(detail)["error"]["message"]
-        except Exception:
-            msg = detail[:300]
-        print(f"      {model:<24} FAILED  HTTP {err.code} after {elapsed:.1f}s")
-        print(f"      {'':<24}         {msg}")
+        print(f"      {model:<24} FAILED  {err} after {elapsed:.1f}s")
         return False
     except Exception as err:
         elapsed = time.time() - started
@@ -185,11 +170,10 @@ def try_generation(model, api_key, size="1024x1024", quality="low"):
         return False
 
     elapsed = time.time() - started
-    data = (body.get("data") or [{}])[0]
-    b64 = data.get("b64_json")
-    n_bytes = len(base64.b64decode(b64)) if b64 else 0
+    image = result.image
+    n_bytes = len(image) if isinstance(image, bytes) else 0
 
-    usage = body.get("usage")
+    usage = result.usage
     cost = estimate_cost(model, usage)
     cost_str = f"~${cost:.4f}" if cost is not None else "n/a"
     tokens = usage.get("output_tokens") if usage else None

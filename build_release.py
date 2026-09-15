@@ -60,7 +60,8 @@ def create_release_package():
     # Required files to include in the plugin folder
     plugin_files = [
         "gimp-ai-plugin.py",
-        "coordinate_utils.py"
+        "coordinate_utils.py",
+        "openai_client.py"
     ]
     
     # Copy plugin files
@@ -140,7 +141,8 @@ OPTION 2: MANUAL INSTALLATION
    plug-ins/
    └── gimp-ai-plugin/
        ├── gimp-ai-plugin.py
-       └── coordinate_utils.py
+       ├── coordinate_utils.py
+       └── openai_client.py
 
 3. SET PERMISSIONS (Linux/macOS only):
    

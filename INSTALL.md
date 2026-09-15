@@ -33,7 +33,7 @@ The installation process is simple:
 
 **MANUAL METHOD:**
 
-1. Download 2 files
+1. Download 3 files
 2. Create a folder in GIMP's plugin directory
 3. Copy the files to that folder
 4. Restart GIMP
@@ -45,10 +45,11 @@ The installation process is simple:
 
 ## 📥 Step 1: Download the Plugin Files
 
-You need **exactly 2 files**:
+You need **exactly 3 files**:
 
 1. **`gimp-ai-plugin.py`** - The main plugin file
-2. **`coordinate_utils.py`** - Helper functions (required)
+2. **`coordinate_utils.py`** - Coordinate maths (required)
+3. **`openai_client.py`** - OpenAI API client (required)
 
 ### Option A: Download Release Package with Automated Installer (Easiest!)
 
@@ -69,15 +70,16 @@ You need **exactly 2 files**:
 
 1. Go to the [Releases page](https://github.com/lukaso/gimp-ai/releases)
 2. Download the latest `gimp-ai-plugin-vX.X.X.zip` file
-3. Extract the ZIP file - you'll see a `gimp-ai-plugin` folder containing both files
+3. Extract the ZIP file - you'll see a `gimp-ai-plugin` folder containing all three files
 
 ### Option C: Download Individual Files
 
 1. Go to the [GitHub repository](https://github.com/lukaso/gimp-ai)
 2. Click on `gimp-ai-plugin.py` → Click "Raw" → Save the file (Ctrl+S or Cmd+S)
 3. Go back and click on `coordinate_utils.py` → Click "Raw" → Save the file
+4. Go back and click on `openai_client.py` → Click "Raw" → Save the file
 
-> **Important**: Keep these two files together - the plugin won't work without both!
+> **Important**: Keep all three files together - the plugin won't work without all of them!
 
 ---
 
@@ -194,7 +196,7 @@ mkdir ~/.config/GIMP/3.0/plug-ins/gimp-ai-plugin
 
 ## 📋 Step 4: Copy the Plugin Files
 
-Now copy **both files** you downloaded into the `gimp-ai-plugin` folder you just created.
+Now copy **all three files** you downloaded into the `gimp-ai-plugin` folder you just created.
 
 ### Where to Copy:
 
@@ -314,10 +316,11 @@ Let's verify everything is working:
 **Check these things:**
 
 1. ✅ **Did you restart GIMP completely?** (Quit and reopen)
-2. ✅ **Are both files in the right place?**
+2. ✅ **Are all three files in the right place?**
    ```
    plug-ins/gimp-ai-plugin/gimp-ai-plugin.py
    plug-ins/gimp-ai-plugin/coordinate_utils.py
+   plug-ins/gimp-ai-plugin/openai_client.py
    ```
 3. ✅ **Is the folder named exactly `gimp-ai-plugin`?** (not `gimp_ai_plugin` or `gimp-ai`)
 4. ✅ **Do you have GIMP 3.0.4 or newer?** Check: `Help` → `About GIMP`

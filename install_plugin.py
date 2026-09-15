@@ -21,6 +21,14 @@ import shutil
 import re
 from pathlib import Path
 
+# Every file the plugin needs at runtime. Keep this in step with
+# build_release.py's plugin_files list.
+PLUGIN_FILES = [
+    "gimp-ai-plugin.py",
+    "coordinate_utils.py",
+    "openai_client.py",
+]
+
 
 def parse_version(version_str):
     """Parse version string like '3.0' or '3.1' into tuple (major, minor, patch)"""
@@ -208,7 +216,7 @@ def find_plugin_files():
     """Find the plugin files in the current directory or parent directory"""
     current_dir = Path(__file__).parent
 
-    required_files = ["gimp-ai-plugin.py", "coordinate_utils.py"]
+    required_files = PLUGIN_FILES
 
     # Check current directory
     all_found = all((current_dir / f).exists() for f in required_files)
@@ -283,14 +291,13 @@ def install_plugin():
         print("❌ ERROR: Could not find plugin files!")
         print()
         print("Please make sure you have these files:")
-        print("  • gimp-ai-plugin.py")
-        print("  • coordinate_utils.py")
+        for name in PLUGIN_FILES:
+            print(f"  • {name}")
         print()
         print("They should be in the same directory as this installer.")
         return False
 
-    plugin_file = source_dir / "gimp-ai-plugin.py"
-    utils_file = source_dir / "coordinate_utils.py"
+    source_files = [source_dir / name for name in PLUGIN_FILES]
 
     print(f"✅ Found plugin files in: {source_dir}")
     print()
@@ -351,13 +358,10 @@ def install_plugin():
 
     try:
         dest_plugin = os.path.join(plugin_dest_dir, "gimp-ai-plugin.py")
-        dest_utils = os.path.join(plugin_dest_dir, "coordinate_utils.py")
 
-        shutil.copy2(plugin_file, dest_plugin)
-        print(f"  ✅ gimp-ai-plugin.py")
-
-        shutil.copy2(utils_file, dest_utils)
-        print(f"  ✅ coordinate_utils.py")
+        for source in source_files:
+            shutil.copy2(source, os.path.join(plugin_dest_dir, source.name))
+            print(f"  ✅ {source.name}")
 
     except (IOError, PermissionError) as e:
         print(f"❌ ERROR copying files: {e}")

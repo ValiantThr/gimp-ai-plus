@@ -22,10 +22,14 @@ def main():
     # Import and run coordinate tests
     try:
         from test_coordinate_transformations import run_all_tests
-        
+        from test_openai_client import run_all_tests as run_client_tests
+
         print("Running coordinate transformation tests...")
         success = run_all_tests()
-        
+
+        print("\nRunning OpenAI client tests...")
+        success = run_client_tests() and success
+
         if success:
             print("\n🎉 All tests completed successfully!")
             print("The coordinate transformation system is mathematically correct.")
