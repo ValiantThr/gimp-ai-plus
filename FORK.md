@@ -32,6 +32,34 @@ over 3840px, total pixels between 655,360 and 8,294,400, aspect ratio between 1:
 Upstream is locked to three fixed shapes, so every operation round-trips through a downscale.
 Lifting that is the single biggest quality win available.
 
+### Capabilities, verified against the live API
+
+Established by probing, because the documentation is wrong in at least one
+place: it advertises `xhigh` and `max` quality for the 2.5 models and the API
+rejects both.
+
+| | 1 / 1.5 / 1-mini | 2 / 2.5-flare / 2.5-sunburst |
+|---|---|---|
+| Sizes | `1024x1024`, `1536x1024`, `1024x1536`, `auto` | any `WIDTHxHEIGHT` |
+| `input_fidelity` | 1 and 1.5 only | **rejected** |
+| Quality | `low`, `medium`, `high`, `auto` | same |
+| `background` | `opaque`, `transparent`, `auto` | same |
+| `moderation` | `low`, `auto` | same |
+
+Custom sizes must have both edges divisible by 16, longest edge 3840 or less,
+between 655,360 and 8,294,400 pixels, aspect ratio 3:1 or tighter. Each of those
+rejections was read back from the API verbatim.
+
+**Two probes are needed, and conflating them breaks things.** Allowed *values*
+come free: an invalid enum returns a 400 listing the valid ones before anything
+is generated. Whether a model *accepts a parameter at all* does not: enum
+validation runs first, so an invalid value reports "Supported values are:
+'high' and 'low'" even for models that reject the parameter outright.
+Establishing support needs an otherwise-valid request, which generates an image
+on the models that do support it. That distinction is exactly what broke the
+first Phase 2 build - `input_fidelity` looked universally supported and is in
+fact rejected by every 2.x model. The client now omits it per model.
+
 ## Verified baseline (2026-09-15)
 
 Established on Windows 11 with GIMP 3.2.6 before changing any plugin code.
@@ -158,8 +186,9 @@ Status is updated as phases land.
 - **Phase 1 — Client extraction.** *(complete)* `openai_client.py` owns one request
   builder, one error handler, one timeout policy, one TLS policy. Closed issues 1–4, 6
   and 8, and deleted 265 lines of dead networking code.
-- **Phase 2 — Model registry and picker.** Per-model capability entries; model and quality
-  dropdowns in Settings. Default to `gpt-image-2.5-flare`.
+- **Phase 2 — Model registry and picker.** *(complete)* Per-model capability entries in
+  `openai_client.py`, model and quality dropdowns in Settings, default
+  `gpt-image-2.5-flare`. Capabilities verified against the live API, not the docs.
 - **Phase 3 — Resolution pipeline.** Replace fixed shapes in `coordinate_utils.py` with
   arbitrary multiple-of-16 sizing under the real API constraints; rewrite the affected tests.
 - **Phase 4 — New capabilities.** `background: transparent`, `output_format`, `n > 1` with a

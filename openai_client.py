@@ -32,11 +32,182 @@ API_BASE = "https://api.openai.com/v1"
 DEFAULT_TIMEOUT = 180
 DOWNLOAD_TIMEOUT = 60
 
-# Phase 1 is a pure refactor: this stays on upstream's model so any change in
-# behaviour is attributable to the restructuring rather than to a new model.
-# Phase 2 introduces the model registry and moves the default to
-# gpt-image-2.5-flare.
-DEFAULT_MODEL = "gpt-image-1"
+# ---------------------------------------------------------------------------
+# Model registry
+#
+# Every value below was verified against the live API on 2026-09-15, not taken
+# from the documentation - which advertises "xhigh" and "max" quality for the
+# 2.5 models that the API rejects outright.
+#
+# Two different probes were needed, and the distinction matters:
+#
+#   Allowed VALUES come free. Sending an invalid enum ("notaquality") returns
+#   a 400 listing the valid ones before anything is generated.
+#
+#   Whether a model ACCEPTS a parameter at all does not. Enum validation runs
+#   first, so an invalid value reports "Supported values are: 'high', 'low'"
+#   even for models that reject the parameter entirely. Establishing support
+#   requires an otherwise-valid request, which generates an image on the
+#   models that do support it.
+#
+# Conflating the two is what broke the first Phase 2 build: input_fidelity
+# looked universally supported and is in fact rejected by every 2.x model.
+# ---------------------------------------------------------------------------
+
+# Uniform across every image model.
+#   "Invalid value: 'x'. Supported values are: 'low', 'medium', 'high', 'auto'."
+QUALITIES = ("low", "medium", "high", "auto")
+DEFAULT_QUALITY = "high"
+
+BACKGROUNDS = ("opaque", "transparent", "auto")
+INPUT_FIDELITIES = ("high", "low")
+MODERATIONS = ("low", "auto")
+
+# The three shapes the gpt-image-1 generation accepts.
+FIXED_SIZES = ("1024x1024", "1536x1024", "1024x1536")
+
+
+class ModelSpec:
+    """What one image model accepts, and what it costs.
+
+    `output_price_per_1m` is dollars per million output tokens, used for the
+    per-call cost readout. Sizing rules differ by generation: the 1.x models
+    take three fixed shapes, the 2.x models take any WIDTHxHEIGHT whose edges
+    are multiples of 16, within a pixel budget and aspect limit.
+    """
+
+    def __init__(self, model_id, label, summary, custom_sizes=False,
+                 max_edge=None, min_pixels=None, max_pixels=None,
+                 max_aspect=None, output_price_per_1m=0.0,
+                 supports_input_fidelity=False):
+        self.model_id = model_id
+        self.label = label
+        self.summary = summary
+        self.custom_sizes = custom_sizes
+        self.max_edge = max_edge
+        self.min_pixels = min_pixels
+        self.max_pixels = max_pixels
+        self.max_aspect = max_aspect
+        self.output_price_per_1m = output_price_per_1m
+        # Only the 1.x line takes input_fidelity, and not even all of it.
+        # Sending it elsewhere is a hard 400: "The model 'x' does not support
+        # the 'input_fidelity' parameter." Verified per model against the live
+        # API - note that probing with an INVALID value is useless here,
+        # because enum validation runs before the model-support check and
+        # happily reports "Supported values are: 'high' and 'low'" for models
+        # that reject the parameter outright.
+        self.supports_input_fidelity = supports_input_fidelity
+
+    def __repr__(self):
+        return f"<ModelSpec {self.model_id}>"
+
+    def check_size(self, width, height):
+        """Is this size acceptable? Returns (ok, reason).
+
+        Mirrors the API's own validation so the plugin can fail early with a
+        useful message instead of spending a round trip on a 400.
+        """
+        if not self.custom_sizes:
+            size = f"{width}x{height}"
+            if size not in FIXED_SIZES:
+                return False, f"{self.model_id} accepts only {', '.join(FIXED_SIZES)}"
+            return True, ""
+
+        if width % 16 or height % 16:
+            return False, "width and height must both be divisible by 16"
+        if self.max_edge and max(width, height) > self.max_edge:
+            return False, f"the longest edge must be {self.max_edge} or less"
+        pixels = width * height
+        if self.min_pixels and pixels < self.min_pixels:
+            return False, "below the minimum pixel budget"
+        if self.max_pixels and pixels > self.max_pixels:
+            return False, "exceeds the maximum pixel budget"
+        if self.max_aspect:
+            ratio = max(width / height, height / width)
+            if ratio > self.max_aspect:
+                return False, f"the maximum aspect ratio is {self.max_aspect:g}:1"
+        return True, ""
+
+    def cost_for(self, usage):
+        """Estimated output cost in dollars, or None when unknown."""
+        if not usage:
+            return None
+        tokens = usage.get("output_tokens")
+        if tokens is None or not self.output_price_per_1m:
+            return None
+        return tokens / 1_000_000 * self.output_price_per_1m
+
+
+# Newest first: this is also the order shown in the settings dialog.
+MODEL_ORDER = (
+    "gpt-image-2.5-flare",
+    "gpt-image-2.5-sunburst",
+    "gpt-image-2",
+    "gpt-image-1.5",
+    "gpt-image-1",
+    "gpt-image-1-mini",
+)
+
+_CUSTOM = dict(
+    custom_sizes=True,
+    max_edge=3840,
+    min_pixels=655360,
+    max_pixels=8294400,
+    max_aspect=3.0,
+)
+
+MODELS = {
+    "gpt-image-2.5-flare": ModelSpec(
+        "gpt-image-2.5-flare", "GPT-Image-2.5 Flare",
+        "Fast, high quality. The best default for most work.",
+        output_price_per_1m=30.0, **_CUSTOM,
+    ),
+    "gpt-image-2.5-sunburst": ModelSpec(
+        "gpt-image-2.5-sunburst", "GPT-Image-2.5 Sunburst",
+        "Most capable; more precision and control over edits. Slower.",
+        output_price_per_1m=30.0, **_CUSTOM,
+    ),
+    "gpt-image-2": ModelSpec(
+        "gpt-image-2", "GPT-Image-2",
+        "Previous generation. Superseded by 2.5 at the same price.",
+        output_price_per_1m=30.0, **_CUSTOM,
+    ),
+    "gpt-image-1.5": ModelSpec(
+        "gpt-image-1.5", "GPT-Image-1.5",
+        "Older generation; fixed sizes only.",
+        output_price_per_1m=32.0, supports_input_fidelity=True,
+    ),
+    "gpt-image-1": ModelSpec(
+        "gpt-image-1", "GPT-Image-1",
+        "What upstream used. Oldest and the most expensive per image.",
+        output_price_per_1m=40.0, supports_input_fidelity=True,
+    ),
+    "gpt-image-1-mini": ModelSpec(
+        "gpt-image-1-mini", "GPT-Image-1 Mini",
+        "Cheapest. Useful for drafts and for testing without spending much.",
+        output_price_per_1m=8.0,
+    ),
+}
+
+DEFAULT_MODEL = "gpt-image-2.5-flare"
+
+
+def get_model(model_id):
+    """Look up a model, falling back to the default for anything unknown.
+
+    An unrecognised id in a config file should not break the plugin: models
+    come and go, and a stale setting is not worth a crash.
+    """
+    return MODELS.get(model_id) or MODELS[DEFAULT_MODEL]
+
+
+def model_labels():
+    """(model_id, label, summary) in display order, for the settings dialog."""
+    return [
+        (mid, MODELS[mid].label, MODELS[mid].summary)
+        for mid in MODEL_ORDER
+        if mid in MODELS
+    ]
 
 USER_AGENT = "gimp-ai-plus"
 
@@ -311,6 +482,7 @@ class OpenAIImageClient:
         identical token cost. Generation is left alone; a transparent
         background is a legitimate thing to ask for there.
         """
+        spec = get_model(model)
         fields = {
             "model": model,
             "prompt": prompt,
@@ -318,9 +490,13 @@ class OpenAIImageClient:
             "size": size,
             "quality": quality,
             "moderation": moderation,
-            "input_fidelity": input_fidelity,
             "background": background,
         }
+        # Sent only where the model accepts it; elsewhere it is a hard 400.
+        if input_fidelity and spec.supports_input_fidelity:
+            fields["input_fidelity"] = input_fidelity
+        elif input_fidelity:
+            self._log(f"{model} does not accept input_fidelity; omitting it")
         fields.update({k: str(v) for k, v in extra.items()})
 
         files = {}

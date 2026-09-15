@@ -37,9 +37,14 @@ from coordinate_utils import (
 # All OpenAI communication goes through this module - one request builder,
 # one error handler, one timeout policy, one TLS policy.
 from openai_client import (
+    DEFAULT_MODEL,
+    DEFAULT_QUALITY,
+    QUALITIES,
     OpenAIImageClient,
     OpenAIError,
     download_bytes,
+    get_model,
+    model_labels,
     png_info,
 )
 
@@ -321,6 +326,20 @@ class GimpAIPlugin(Gimp.PlugIn):
         if run_mode == Gimp.RunMode.NONINTERACTIVE:
             return Gimp.PDBStatusType.CALLING_ERROR
         return Gimp.PDBStatusType.CANCEL
+
+    def _get_model_id(self):
+        """The configured model, falling back to the current default."""
+        configured = self.config.get("model")
+        if configured and configured in [mid for mid, _, _ in model_labels()]:
+            return configured
+        if configured:
+            print(f"DEBUG: Unknown model '{configured}' in config, using {DEFAULT_MODEL}")
+        return DEFAULT_MODEL
+
+    def _get_quality(self):
+        """The configured quality, falling back to the default."""
+        configured = self.config.get("quality")
+        return configured if configured in QUALITIES else DEFAULT_QUALITY
 
     def _get_processing_mode(self, dialog_mode=None):
         """Determine processing mode based on dialog selection or fallback to config"""
@@ -1145,6 +1164,69 @@ class GimpAIPlugin(Gimp.PlugIn):
             history_frame.add(history_box)
             content_area.pack_start(history_frame, False, False, 0)
 
+            # Model section
+            model_frame = Gtk.Frame(label="AI Model")
+            model_box = Gtk.VBox(spacing=10)
+            model_box.set_margin_start(10)
+            model_box.set_margin_end(10)
+            model_box.set_margin_top(10)
+            model_box.set_margin_bottom(10)
+
+            model_combo = Gtk.ComboBoxText()
+            model_ids = []
+            current_model = self._get_model_id()
+            for index, (model_id, label, _summary) in enumerate(model_labels()):
+                model_combo.append_text(label)
+                model_ids.append(model_id)
+                if model_id == current_model:
+                    model_combo.set_active(index)
+            if model_combo.get_active() < 0 and model_ids:
+                model_combo.set_active(0)
+            model_box.pack_start(model_combo, False, False, 0)
+
+            # A one-line description of whichever model is selected.
+            model_info = Gtk.Label()
+            model_info.set_halign(Gtk.Align.START)
+            model_info.set_line_wrap(True)
+            model_info.get_style_context().add_class("dim-label")
+
+            def describe_model(combo):
+                index = combo.get_active()
+                if 0 <= index < len(model_ids):
+                    spec = get_model(model_ids[index])
+                    model_info.set_text(spec.summary)
+
+            model_combo.connect("changed", describe_model)
+            describe_model(model_combo)
+            model_box.pack_start(model_info, False, False, 0)
+
+            # Quality
+            quality_row = Gtk.HBox(spacing=10)
+            quality_row.pack_start(
+                Gtk.Label(label="Quality:"), False, False, 0
+            )
+            quality_combo = Gtk.ComboBoxText()
+            current_quality = self._get_quality()
+            for index, quality in enumerate(QUALITIES):
+                quality_combo.append_text(quality)
+                if quality == current_quality:
+                    quality_combo.set_active(index)
+            if quality_combo.get_active() < 0:
+                quality_combo.set_active(QUALITIES.index(DEFAULT_QUALITY))
+            quality_row.pack_start(quality_combo, False, False, 0)
+            model_box.pack_start(quality_row, False, False, 0)
+
+            quality_info = Gtk.Label()
+            quality_info.set_text(
+                "Higher quality costs more per image and takes longer."
+            )
+            quality_info.set_halign(Gtk.Align.START)
+            quality_info.get_style_context().add_class("dim-label")
+            model_box.pack_start(quality_info, False, False, 0)
+
+            model_frame.add(model_box)
+            content_area.pack_start(model_frame, False, False, 0)
+
             # Debug Settings section
             debug_frame = Gtk.Frame(label="Debug Settings")
             debug_box = Gtk.VBox(spacing=10)
@@ -1185,6 +1267,17 @@ class GimpAIPlugin(Gimp.PlugIn):
                         self.config["openai"] = {}
                     self.config["openai"]["api_key"] = new_key
                     print("DEBUG: API key updated")
+
+                # Save model and quality
+                model_index = model_combo.get_active()
+                if 0 <= model_index < len(model_ids):
+                    self.config["model"] = model_ids[model_index]
+                    print(f"DEBUG: Model set to {model_ids[model_index]}")
+
+                quality_index = quality_combo.get_active()
+                if 0 <= quality_index < len(QUALITIES):
+                    self.config["quality"] = QUALITIES[quality_index]
+                    print(f"DEBUG: Quality set to {QUALITIES[quality_index]}")
 
                 # Save debug mode setting
                 debug_mode = debug_checkbox.get_active()
@@ -1783,7 +1876,10 @@ class GimpAIPlugin(Gimp.PlugIn):
             if progress_label:
                 self._update_progress(progress_label, "Sending request...")
 
-            result = client.generate(prompt, size=optimal_size, quality="high")
+            model_id = self._get_model_id()
+            result = client.generate(
+                prompt, model=model_id, size=optimal_size, quality=self._get_quality()
+            )
 
             if progress_label:
                 self._update_progress(progress_label, "Processing AI response...")
@@ -1794,7 +1890,7 @@ class GimpAIPlugin(Gimp.PlugIn):
                 image_data = client.download(image_data)
 
             print(f"DEBUG: Decoded {len(image_data)} bytes of image data")
-            self._log_usage(result)
+            self._log_usage(result, model_id)
             return True, "Image generation successful", image_data
 
         except OpenAIError as e:
@@ -1804,14 +1900,16 @@ class GimpAIPlugin(Gimp.PlugIn):
             print(f"ERROR: Image generation failed unexpectedly: {e}")
             return False, str(e), None
 
-    def _log_usage(self, result):
-        """Record token usage from a response.
-
-        Phase 5 turns this into a per-call cost readout in the UI; for now it
-        gives us real numbers in the debug log.
-        """
-        if result.usage:
-            print(f"DEBUG: [api] usage {result.usage}")
+    def _log_usage(self, result, model_id=None):
+        """Record token usage, and the cost it implies, from a response."""
+        if not result.usage:
+            return
+        spec = get_model(model_id or self._get_model_id())
+        cost = spec.cost_for(result.usage)
+        if cost is not None:
+            print(f"DEBUG: [api] {spec.model_id} usage {result.usage} (~${cost:.4f})")
+        else:
+            print(f"DEBUG: [api] {spec.model_id} usage {result.usage}")
 
     def _call_openai_generation_threaded(
         self, prompt, api_key, size="auto", progress_label=None
@@ -2818,10 +2916,10 @@ class GimpAIPlugin(Gimp.PlugIn):
 
             # Prepare multipart form data for GPT-Image-1
             fields = {
-                "model": "gpt-image-1",
+                "model": self._get_model_id(),
                 "prompt": prompt,
                 "n": "1",
-                "quality": "high",
+                "quality": self._get_quality(),
                 "size": size if size else "1024x1024",  # Use provided size or default
                 "moderation": "low",  # Less restrictive filtering
                 "input_fidelity": "high",  # High fidelity for better results
@@ -3087,7 +3185,7 @@ class GimpAIPlugin(Gimp.PlugIn):
                 Gimp.progress_set_text("Processing AI response...")
                 Gimp.progress_update(0.75)
 
-            self._log_usage(result)
+            self._log_usage(result, fields["model"])
             # Callers expect the raw API response shape.
             return True, "API call successful", result.raw
 

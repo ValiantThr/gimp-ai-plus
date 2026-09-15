@@ -391,6 +391,202 @@ def test_edit_requests_opaque_background():
     return True
 
 
+def test_model_registry():
+    """The registry's shape and defaults."""
+    print("\n=== Testing model registry ===")
+
+    from openai_client import (
+        DEFAULT_MODEL, DEFAULT_QUALITY, MODELS, MODEL_ORDER, QUALITIES,
+        get_model, model_labels,
+    )
+
+    assert DEFAULT_MODEL == "gpt-image-2.5-flare", DEFAULT_MODEL
+    assert DEFAULT_MODEL in MODELS
+    print(f"[ok] default model is {DEFAULT_MODEL}")
+
+    # Verified against the live API: the docs claim xhigh and max exist, the
+    # API rejects both.
+    assert QUALITIES == ("low", "medium", "high", "auto"), QUALITIES
+    assert DEFAULT_QUALITY in QUALITIES
+    print(f"[ok] qualities are {QUALITIES}, matching what the API accepts")
+
+    assert set(MODEL_ORDER) == set(MODELS), "MODEL_ORDER and MODELS disagree"
+    assert MODEL_ORDER[0] == DEFAULT_MODEL, "default should be listed first"
+    print(f"[ok] {len(MODELS)} models, ordered newest first")
+
+    labels = model_labels()
+    assert len(labels) == len(MODELS)
+    assert all(len(entry) == 3 for entry in labels)
+    assert all(entry[1] and entry[2] for entry in labels), "every model needs a label and summary"
+    print("[ok] every model has a label and a one-line summary")
+
+    # A stale or removed model id must not break the plugin.
+    assert get_model("gpt-image-99").model_id == DEFAULT_MODEL
+    assert get_model(None).model_id == DEFAULT_MODEL
+    assert get_model("gpt-image-1").model_id == "gpt-image-1"
+    print("[ok] unknown model ids fall back to the default")
+    return True
+
+
+def test_model_size_rules():
+    """Size validation mirrors what the API enforces."""
+    print("\n=== Testing model size rules ===")
+
+    from openai_client import get_model
+
+    legacy = get_model("gpt-image-1")
+    for size in ((1024, 1024), (1536, 1024), (1024, 1536)):
+        ok, why = legacy.check_size(*size)
+        assert ok, f"{size} should be allowed: {why}"
+    ok, why = legacy.check_size(2048, 2048)
+    assert not ok and "only" in why, why
+    print("[ok] 1.x models accept only the three fixed shapes")
+
+    modern = get_model("gpt-image-2.5-flare")
+    ok, _ = modern.check_size(2048, 2048)
+    assert ok, "2048x2048 is accepted by the live API"
+    ok, _ = modern.check_size(3072, 1024)
+    assert ok, "3072x1024 is accepted by the live API"
+    print("[ok] 2.x models accept custom sizes the API accepted live")
+
+    # Each rejection below was observed from the API verbatim.
+    for (w, h), fragment in (
+        ((13, 17), "divisible by 16"),
+        ((4096, 4096), "longest edge"),
+        ((512, 512), "minimum pixel budget"),
+        ((3840, 3840), "maximum pixel budget"),
+        ((256, 3072), "aspect ratio"),
+    ):
+        ok, why = modern.check_size(w, h)
+        assert not ok, f"{w}x{h} should be rejected"
+        assert fragment in why, f"{w}x{h}: expected {fragment!r}, got {why!r}"
+    print("[ok] rejects divisibility, edge, both pixel budgets and aspect ratio")
+    return True
+
+
+def test_cost_estimation():
+    """Cost comes from the model's own price, not a global constant."""
+    print("\n=== Testing cost estimation ===")
+
+    from openai_client import get_model
+
+    usage = {"output_tokens": 1_000_000}
+    assert abs(get_model("gpt-image-1").cost_for(usage) - 40.0) < 0.001
+    assert abs(get_model("gpt-image-2.5-flare").cost_for(usage) - 30.0) < 0.001
+    assert abs(get_model("gpt-image-1-mini").cost_for(usage) - 8.0) < 0.001
+    print("[ok] per-model output pricing is applied")
+
+    assert get_model("gpt-image-1").cost_for(None) is None
+    assert get_model("gpt-image-1").cost_for({}) is None
+    print("[ok] missing usage yields None rather than a wrong number")
+
+    cheap = get_model("gpt-image-2.5-flare").cost_for({"output_tokens": 272})
+    dear = get_model("gpt-image-1").cost_for({"output_tokens": 272})
+    assert cheap < dear, "the migration target must be cheaper"
+    print(f"[ok] at 272 tokens: flare ~${cheap:.4f} vs gpt-image-1 ~${dear:.4f}")
+    return True
+
+
+def test_configured_model_reaches_the_request():
+    """Whichever model is chosen must actually be sent."""
+    print("\n=== Testing model reaches the request ===")
+
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {"data": [{"b64_json": base64.b64encode(b"IMG").decode()}]}
+            ).encode()
+
+    def fake_urlopen(req, timeout=None, context=None):
+        captured["body"] = req.data
+        return FakeResponse()
+
+    original = openai_client.urllib.request.urlopen
+    openai_client.urllib.request.urlopen = fake_urlopen
+    try:
+        client = OpenAIImageClient("sk-test")
+        client.generate("a fly", model="gpt-image-2.5-sunburst", quality="medium")
+        body = json.loads(captured["body"].decode())
+        assert body["model"] == "gpt-image-2.5-sunburst", body["model"]
+        assert body["quality"] == "medium", body["quality"]
+        print("[ok] generation sends the requested model and quality")
+
+        client.edit(_fake_png(8, 8), "a fly", model="gpt-image-2.5-flare", quality="low")
+        assert b"gpt-image-2.5-flare" in captured["body"]
+        print("[ok] edits send the requested model")
+    finally:
+        openai_client.urllib.request.urlopen = original
+    return True
+
+
+def test_input_fidelity_only_where_supported():
+    """input_fidelity must be sent only to models that accept it.
+
+    Every 2.x model rejects it with a hard 400: "The model 'x' does not
+    support the 'input_fidelity' parameter." Verified per model against the
+    live API.
+    """
+    print("\n=== Testing input_fidelity gating ===")
+
+    from openai_client import get_model
+
+    assert get_model("gpt-image-1").supports_input_fidelity
+    assert get_model("gpt-image-1.5").supports_input_fidelity
+    for model_id in ("gpt-image-1-mini", "gpt-image-2",
+                     "gpt-image-2.5-flare", "gpt-image-2.5-sunburst"):
+        assert not get_model(model_id).supports_input_fidelity, model_id
+    print("[ok] registry records support for 1 and 1.5 only")
+
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {"data": [{"b64_json": base64.b64encode(b"IMG").decode()}]}
+            ).encode()
+
+    def fake_urlopen(req, timeout=None, context=None):
+        captured["body"] = req.data
+        return FakeResponse()
+
+    original = openai_client.urllib.request.urlopen
+    openai_client.urllib.request.urlopen = fake_urlopen
+    try:
+        client = OpenAIImageClient("sk-test")
+
+        client.edit(_fake_png(8, 8), "x", model="gpt-image-1", input_fidelity="high")
+        assert b'name="input_fidelity"' in captured["body"]
+        print("[ok] sent to gpt-image-1")
+
+        client.edit(_fake_png(8, 8), "x", model="gpt-image-2.5-flare",
+                    input_fidelity="high")
+        assert b'name="input_fidelity"' not in captured["body"], (
+            "input_fidelity must be omitted for gpt-image-2.5-flare"
+        )
+        print("[ok] omitted for gpt-image-2.5-flare even when asked for")
+
+        client.edit(_fake_png(8, 8), "x", model="gpt-image-2.5-sunburst")
+        assert b'name="input_fidelity"' not in captured["body"]
+        print("[ok] omitted for gpt-image-2.5-sunburst by default")
+    finally:
+        openai_client.urllib.request.urlopen = original
+    return True
+
+
 def run_all_tests():
     """Run every openai_client test, returning True if all passed."""
     print("Running openai_client Tests")
@@ -409,6 +605,11 @@ def run_all_tests():
         test_http_error_surfaces,
         test_request_shape,
         test_edit_requests_opaque_background,
+        test_model_registry,
+        test_model_size_rules,
+        test_cost_estimation,
+        test_configured_model_reaches_the_request,
+        test_input_fidelity_only_where_supported,
     ]
 
     failures = []

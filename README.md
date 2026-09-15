@@ -2,7 +2,9 @@
 
 A Python plugin for GIMP 3.0.4+ that integrates AI image generation capabilities directly into GIMP. This is a **beta release** seeking testers on all platforms.
 
-Currently supports **OpenAI's gpt-image-1** models for inpainting and image generation. Future plans include support for additional AI providers.
+Supports OpenAI's current image models, defaulting to **GPT-Image-2.5 Flare** —
+cheaper, faster and better than the `gpt-image-1` upstream hardcodes. Pick a
+different model any time under **Settings → AI Model**.
 
 ## ✨ Features
 
@@ -83,6 +85,23 @@ plug-ins/
 4. Click OK - it's saved automatically!
 
 > **First time?** See [INSTALL.md](INSTALL.md) for detailed API key instructions.
+
+## 🧠 Choosing a model
+
+`Filters → AI → Inpainting → Settings` (the button in the dialog) offers:
+
+| Model | Notes |
+|---|---|
+| **GPT-Image-2.5 Flare** | Default. Fast and high quality — best for most work. |
+| **GPT-Image-2.5 Sunburst** | Most capable, more control over edits. Slower. |
+| **GPT-Image-2** | Previous generation, same price as 2.5. |
+| **GPT-Image-1.5** | Older; fixed sizes only. |
+| **GPT-Image-1** | What upstream used. Oldest and dearest per image. |
+| **GPT-Image-1 Mini** | Cheapest — handy for drafts and experiments. |
+
+Quality (`low`, `medium`, `high`, `auto`) is set in the same place. Higher
+quality costs more and takes longer; `low` is a good setting for trying out
+prompts before committing.
 
 ## 🎨 Usage
 
