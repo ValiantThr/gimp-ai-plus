@@ -244,6 +244,22 @@ the image). Lower is cheaper and faster. It applies only to GPT-Image-2 and
 newer; the 1.x models really are limited to the three fixed shapes, and their
 path is unchanged.
 
+### Result edge
+
+The selection tells the model where to work, but subjects do not fit selection
+outlines. Upstream clipped the result layer to the selection exactly
+(`create_mask(AddMaskType.SELECTION)`), so a fly drawn into an ellipse lost its
+wings and legs to the ellipse edge - the content was generated, then hidden.
+
+The mask is now grown before it is created, by a percentage of the selection's
+shorter side (4px to 256px), and the user's own selection is restored
+afterwards. **Result edge** in Settings offers exact clipping, small/medium/large
+margins, or none at all; the default is medium (25%).
+
+The margin is safe because the model reproduces the surrounding area closely -
+it is the same pixels it was given - so what becomes visible blends in. Set it
+to "Clip to selection exactly" to restore upstream behaviour.
+
 ### Scripting the plugin
 
 Every procedure runs without a dialog, which is what makes end-to-end testing

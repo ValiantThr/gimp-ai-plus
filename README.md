@@ -103,6 +103,12 @@ Quality (`low`, `medium`, `high`, `auto`) is set in the same place. Higher
 quality costs more and takes longer; `low` is a good setting for trying out
 prompts before committing.
 
+**Result edge** controls how tightly an inpaint is clipped to your selection.
+Subjects rarely fit a selection outline — a fly drawn into an ellipse would
+otherwise lose its wings to the ellipse edge — so by default the result is
+allowed to spill a little past it. Set it to *Clip to selection exactly* if you
+need the edit strictly confined.
+
 **Max resolution** is also there. GPT-Image-2 and newer accept almost any
 output size, so the plugin sizes each request to match the area you are
 working on instead of squeezing it into a fixed 1024 or 1536 shape — which

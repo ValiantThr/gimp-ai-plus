@@ -374,6 +374,51 @@ class GimpAIPlugin(Gimp.PlugIn):
                 policy["budget_pixels"] = limit * limit
         return policy
 
+    # How far the result may extend past the selection outline, as a
+    # percentage of the selection's shorter side. -1 means "do not clip".
+    RESULT_MARGINS = (
+        (0, "Clip to selection exactly"),
+        (10, "Small margin"),
+        (25, "Medium margin (recommended)"),
+        (50, "Large margin"),
+        (-1, "No clipping - show the whole region"),
+    )
+    DEFAULT_RESULT_MARGIN = 25
+
+    def _get_result_margin_px(self, context_info):
+        """Pixels to grow the result mask beyond the selection.
+
+        Returns -1 for "do not clip at all". The selection tells the model
+        where to work, but subjects do not fit selection outlines - a fly
+        drawn into an ellipse loses its wings to the ellipse edge. A margin
+        keeps the overspill visible. It is a percentage of the selection's
+        shorter side so it scales with the edit, with absolute bounds so a
+        huge selection does not swallow the image and a tiny one still gets
+        usable room.
+        """
+        setting = self.config.get("result_margin", self.DEFAULT_RESULT_MARGIN)
+        try:
+            percent = int(setting)
+        except (TypeError, ValueError):
+            percent = self.DEFAULT_RESULT_MARGIN
+
+        if percent < 0:
+            return -1
+        if percent == 0:
+            return 0
+
+        bounds = context_info.get("selection_bounds")
+        if not bounds or len(bounds) < 4:
+            return 0
+        sel_w = abs(bounds[2] - bounds[0])
+        sel_h = abs(bounds[3] - bounds[1])
+        shorter = min(sel_w, sel_h)
+        if shorter <= 0:
+            return 0
+
+        margin = int(shorter * percent / 100.0)
+        return max(4, min(margin, 256))
+
     def _get_processing_mode(self, dialog_mode=None):
         """Determine processing mode based on dialog selection or fallback to config"""
         if dialog_mode:
@@ -1270,6 +1315,35 @@ class GimpAIPlugin(Gimp.PlugIn):
             res_row.pack_start(res_combo, False, False, 0)
             model_box.pack_start(res_row, False, False, 0)
 
+            # How tightly the inpaint result is clipped to the selection.
+            margin_row = Gtk.HBox(spacing=10)
+            margin_row.pack_start(
+                Gtk.Label(label="Result edge:"), False, False, 0
+            )
+            margin_combo = Gtk.ComboBoxText()
+            current_margin = self.config.get(
+                "result_margin", self.DEFAULT_RESULT_MARGIN
+            )
+            for index, (value, text) in enumerate(self.RESULT_MARGINS):
+                margin_combo.append_text(text)
+                if value == current_margin:
+                    margin_combo.set_active(index)
+            if margin_combo.get_active() < 0:
+                margin_combo.set_active(2)
+            margin_row.pack_start(margin_combo, False, False, 0)
+            model_box.pack_start(margin_row, False, False, 0)
+
+            margin_info = Gtk.Label()
+            margin_info.set_text(
+                "Inpainted subjects rarely fit the selection outline. A margin "
+                "lets the parts that spill over stay visible instead of being "
+                "cut off at the edge."
+            )
+            margin_info.set_halign(Gtk.Align.START)
+            margin_info.set_line_wrap(True)
+            margin_info.get_style_context().add_class("dim-label")
+            model_box.pack_start(margin_info, False, False, 0)
+
             quality_info = Gtk.Label()
             quality_info.set_text(
                 "Higher quality and resolution cost more per image and take "
@@ -1339,6 +1413,14 @@ class GimpAIPlugin(Gimp.PlugIn):
                 if 0 <= res_index < len(res_options):
                     self.config["max_resolution"] = res_options[res_index][0]
                     print(f"DEBUG: Max resolution set to {res_options[res_index][0]}")
+
+                margin_index = margin_combo.get_active()
+                if 0 <= margin_index < len(self.RESULT_MARGINS):
+                    self.config["result_margin"] = self.RESULT_MARGINS[margin_index][0]
+                    print(
+                        f"DEBUG: Result margin set to "
+                        f"{self.RESULT_MARGINS[margin_index][0]}%"
+                    )
 
                 # Save debug mode setting
                 debug_mode = debug_checkbox.get_active()
@@ -3138,24 +3220,46 @@ class GimpAIPlugin(Gimp.PlugIn):
 
                 # Create a layer mask for contextual mode only
                 if mode == "contextual" and context_info["has_selection"]:
-                    print(
-                        "DEBUG: Creating selection-based mask for contextual mode while preserving full AI result in layer"
-                    )
+                    margin = self._get_result_margin_px(context_info)
 
-                    # Use GIMP's built-in selection mask type to automatically create properly shaped mask
-                    # This preserves the full AI content in the layer but masks visibility to selection area
-                    mask = result_layer.create_mask(Gimp.AddMaskType.SELECTION)
-                    result_layer.add_mask(mask)
+                    if margin < 0:
+                        print(
+                            "DEBUG: Result clipping disabled - showing the whole "
+                            "processed region"
+                        )
+                    else:
+                        # The selection says where the AI should work, but a
+                        # subject rarely fits its outline: a fly drawn into an
+                        # ellipse loses its wings and legs to the ellipse edge.
+                        # Growing the mask a little lets the parts that spill
+                        # over remain visible. The AI reproduces the
+                        # surrounding area closely, so the margin blends in.
+                        saved_selection = None
+                        if margin > 0:
+                            saved_selection = Gimp.Selection.save(image)
+                            Gimp.Selection.grow(image, margin)
+                            print(
+                                f"DEBUG: Grew result mask by {margin}px so the "
+                                "subject is not clipped to the selection outline"
+                            )
 
-                    # Apply smart feathering to the mask for better blending
-                    self._apply_smart_mask_feathering(mask, image)
+                        mask = result_layer.create_mask(Gimp.AddMaskType.SELECTION)
+                        result_layer.add_mask(mask)
 
-                    print(
-                        "DEBUG: Applied selection-based layer mask with smart feathering - enhanced blending at edges"
-                    )
-                    print(
-                        "DEBUG: Core subject preserved at 100%, edges feathered for seamless integration"
-                    )
+                        # Apply smart feathering to the mask for better blending
+                        self._apply_smart_mask_feathering(mask, image)
+
+                        if saved_selection is not None:
+                            # Put the user's own selection back; they did not
+                            # ask for it to be grown.
+                            image.select_item(
+                                Gimp.ChannelOps.REPLACE, saved_selection
+                            )
+                            image.remove_channel(saved_selection)
+
+                        print(
+                            "DEBUG: Applied selection-based layer mask with smart feathering"
+                        )
                 else:
                     print(
                         "DEBUG: No selection or full_image mode - layer shows full AI result without mask"

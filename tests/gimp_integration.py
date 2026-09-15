@@ -80,8 +80,13 @@ def make_plugin_shim(module):
             self._cancel_requested = False
             self.config = {}
 
+    # Methods AND class-level constants: the plugin keeps things like
+    # PROCESSING_MODES and DEFAULT_RESULT_MARGIN on the class, and methods
+    # that read them fail with AttributeError if only callables are copied.
     for name, attr in vars(module.GimpAIPlugin).items():
-        if callable(attr) and not name.startswith("__"):
+        if name.startswith("__"):
+            continue
+        if callable(attr) or not hasattr(attr, "__get__"):
             setattr(PluginShim, name, attr)
 
     shim = PluginShim()
@@ -492,6 +497,65 @@ def test_installed_plugin_is_current(plugin):
     return True
 
 
+def test_result_margin_scales_with_selection(plugin):
+    """The result mask grows past the selection, proportionally.
+
+    A subject drawn into an ellipse gets its wings and legs clipped by the
+    ellipse outline. The margin keeps that overspill visible. It scales with
+    the selection so a small edit is not swamped and a large one is not
+    swallowed.
+    """
+    name = "result_margin_scales_with_selection"
+
+    def context(x1, y1, x2, y2):
+        return {"selection_bounds": (x1, y1, x2, y2), "has_selection": True}
+
+    original = dict(plugin.config)
+    try:
+        plugin.config["result_margin"] = 25
+        small = plugin._get_result_margin_px(context(100, 100, 300, 260))   # 200x160
+        large = plugin._get_result_margin_px(context(0, 0, 1600, 1200))     # 1600x1200
+        if small <= 0 or large <= small:
+            emit("FAIL", name, f"margins do not scale: small={small}, large={large}")
+            return False
+
+        # Bounds: never zero for a real selection, never runaway.
+        tiny = plugin._get_result_margin_px(context(0, 0, 10, 8))
+        huge = plugin._get_result_margin_px(context(0, 0, 8000, 6000))
+        if tiny < 4:
+            emit("FAIL", name, f"tiny selection got an unusable margin of {tiny}px")
+            return False
+        if huge > 256:
+            emit("FAIL", name, f"huge selection got a runaway margin of {huge}px")
+            return False
+
+        plugin.config["result_margin"] = 0
+        strict = plugin._get_result_margin_px(context(100, 100, 300, 260))
+        if strict != 0:
+            emit("FAIL", name, f"strict setting gave {strict}px, expected 0")
+            return False
+
+        plugin.config["result_margin"] = -1
+        unclipped = plugin._get_result_margin_px(context(100, 100, 300, 260))
+        if unclipped != -1:
+            emit("FAIL", name, f"no-clip setting gave {unclipped}, expected -1")
+            return False
+
+        # A corrupt config value must not break an edit.
+        plugin.config["result_margin"] = "nonsense"
+        fallback = plugin._get_result_margin_px(context(100, 100, 300, 260))
+        if fallback <= 0:
+            emit("FAIL", name, f"bad config value gave {fallback}")
+            return False
+    finally:
+        plugin.config = original
+
+    emit("PASS", name,
+         f"200x160 selection -> {small}px, 1600x1200 -> {large}px, "
+         f"strict 0px, no-clip -1, bad value falls back to {fallback}px")
+    return True
+
+
 def test_procedures_declare_arguments(plugin):
     """Each procedure must expose the arguments that make it scriptable."""
     name = "procedures_declare_arguments"
@@ -605,6 +669,7 @@ TESTS = [
     test_mask_not_mostly_transparent,
     test_ellipse_selection_is_preserved,
     test_mask_matches_image_dimensions,
+    test_result_margin_scales_with_selection,
     test_procedures_declare_arguments,
     test_noninteractive_rejects_empty_prompt,
     test_noninteractive_rejects_bad_mode,
