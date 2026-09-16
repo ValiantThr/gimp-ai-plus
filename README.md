@@ -1,4 +1,4 @@
-# gimp-ai-plus
+# GIMP AI Plus
 
 **AI inpainting, image generation and layer compositing inside GIMP 3, powered
 by OpenAI's GPT-Image models.**
